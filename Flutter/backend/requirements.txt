@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+requests
+pandas
+websockets
+python-dotenv
+httpx
+sqlalchemy
+yfinance

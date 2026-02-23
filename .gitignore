@@ -1,0 +1,28 @@
+# Python
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.venv/
+venv/
+Flutter/backend/.venv/
+*.db
+*.sqlite
+
+# Logs
+logs/
+Flutter/backend/logs/
+
+# Secrets
+.env
+**/.env
+
+# Flutter build
+Flutter/flutter_application_1/build/
+Flutter/flutter_application_1/.dart_tool/
+Flutter/flutter_application_1/.flutter-plugins
+Flutter/flutter_application_1/.flutter-plugins-dependencies
+Flutter/flutter_application_1/android/.gradle/
+
+# General
+.DS_Store
+Thumbs.db

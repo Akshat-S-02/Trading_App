@@ -1,0 +1,38 @@
+[
+    {
+        "symbol": "TCS",
+        "amount": 8.0
+    },
+    {
+        "symbol": "HDFCBANK",
+        "amount": 2.0
+    },
+    {
+        "symbol": "RELIANCE",
+        "amount": 2.0
+    },
+    {
+        "symbol": "INFY",
+        "amount": 1.0
+    },
+    {
+        "symbol": "SBIN",
+        "amount": 1.0
+    },
+    {
+        "symbol": "LG",
+        "amount": 12.0
+    },
+    {
+        "symbol": "LG.NS",
+        "amount": 1.0
+    },
+    {
+        "symbol": "ADANI.NS",
+        "amount": 1.0
+    },
+    {
+        "symbol": "TRIDENT.NS",
+        "amount": 6.0
+    }
+]

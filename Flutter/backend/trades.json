@@ -1,0 +1,162 @@
+[
+    {
+        "symbol": "INFY",
+        "amount": 5.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T02:39:46",
+        "price": 0.0
+    },
+    {
+        "symbol": "RELIANCE",
+        "amount": 1.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T02:40:20",
+        "price": 0.0
+    },
+    {
+        "symbol": "TCS",
+        "amount": 3.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T02:43:26"
+    },
+    {
+        "symbol": "TCS",
+        "amount": 1.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T02:43:50"
+    },
+    {
+        "symbol": "TCS",
+        "amount": 2.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T02:48:38"
+    },
+    {
+        "symbol": "HDFCBANK",
+        "amount": 9.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T02:53:48",
+        "price": 985.25,
+        "profit": 0.0
+    },
+    {
+        "symbol": "HDFCBANK",
+        "amount": 3.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T02:54:13",
+        "price": 985.25,
+        "profit": 0.0
+    },
+    {
+        "symbol": "RELIANCE",
+        "amount": 5.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T03:03:08",
+        "price": 1473.1,
+        "profit": 0.0
+    },
+    {
+        "symbol": "TCS",
+        "amount": 4.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T03:03:35",
+        "price": 2990.2,
+        "profit": 0.0
+    },
+    {
+        "symbol": "RELIANCE",
+        "amount": 2.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T03:07:12",
+        "price": 1473.1,
+        "profit": 0.0
+    },
+    {
+        "symbol": "HDFCBANK",
+        "amount": 2.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T03:17:33",
+        "price": 985.25,
+        "profit": 0.0
+    },
+    {
+        "symbol": "INFY",
+        "amount": 1.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T03:24:49",
+        "price": 1467.9,
+        "profit": 0.0
+    },
+    {
+        "symbol": "HDFCBANK",
+        "amount": 2.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T03:27:30",
+        "price": 985.25,
+        "profit": 0.0
+    },
+    {
+        "symbol": "TCS",
+        "amount": 4.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T03:32:16",
+        "price": 2990.2,
+        "profit": 0.0
+    },
+    {
+        "symbol": "SBIN",
+        "amount": 1.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T03:39:08",
+        "price": 957.6,
+        "profit": 0.0
+    },
+    {
+        "symbol": "RELIANCE",
+        "amount": 1.0,
+        "type": "sell",
+        "timestamp": "2025-11-05T04:17:48",
+        "price": 1473.1,
+        "profit": 0.0
+    },
+    {
+        "symbol": "LG",
+        "amount": 12.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T04:37:02",
+        "price": 0.0,
+        "profit": 0.0
+    },
+    {
+        "symbol": "LG.NS",
+        "amount": 1.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T04:42:26",
+        "price": 0.0,
+        "profit": 0.0
+    },
+    {
+        "symbol": "ADANI.NS",
+        "amount": 1.0,
+        "type": "buy",
+        "timestamp": "2025-11-05T04:47:56",
+        "price": 0.0,
+        "profit": 0.0
+    },
+    {
+        "symbol": "TRIDENT.NS",
+        "amount": 2.0,
+        "type": "buy",
+        "timestamp": "2025-11-06T01:23:52",
+        "price": 0.0,
+        "profit": 0.0
+    },
+    {
+        "symbol": "TRIDENT.NS",
+        "amount": 4.0,
+        "type": "buy",
+        "timestamp": "2025-11-06T01:36:33",
+        "price": 0.0,
+        "profit": 0.0
+    }
+]
