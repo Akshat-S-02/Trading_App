@@ -1,7 +1,9 @@
 // TODO Implement this library.
 
 import 'package:flutter/material.dart';
-import 'package:dio/dio.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import '../app_config.dart';
 
 class AdminScreen extends StatefulWidget {
   @override
@@ -14,10 +16,10 @@ class _AdminScreenState extends State<AdminScreen> {
   Future<void> _addTokens() async {
     final amt = int.tryParse(_amountCtl.text) ?? 0;
     if (amt <= 0) return;
-    final dio = Dio();
-    // default backend URL
-    final url = 'http://10.0.2.2:8000/api/admin/add_tokens'; // emulator trick
-    await dio.post(url, data: {'amount': amt});
+    final url = '$kHttpBase/api/admin/add_tokens';
+    await http.post(Uri.parse(url),
+        headers: {'Content-Type': 'application/json'},
+        body: '{"amount": $amt}');
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Added ₹$amt tokens (backend request sent)')));
   }
 

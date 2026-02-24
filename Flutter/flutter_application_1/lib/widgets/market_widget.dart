@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../widgets/ltp_widget.dart';
 import '../services/api_service.dart';
 import '../providers/trading_provider.dart';
+import '../app_config.dart';
 
 class MarketWidget extends StatefulWidget {
   const MarketWidget({super.key});
@@ -20,7 +21,7 @@ class _MarketWidgetState extends State<MarketWidget> {
   List<dynamic> _searchResults = [];
   bool _isSearching = false;
   final TextEditingController _searchController = TextEditingController();
-  final ApiService _api = ApiService(backendBase: 'http://10.0.2.2:8000/api/market'); // Adjust base URL if needed
+  final ApiService _api = ApiService(backendBase: '$kHttpBase/api/market');
 
   @override
   Widget build(BuildContext context) {

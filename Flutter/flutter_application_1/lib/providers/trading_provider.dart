@@ -89,6 +89,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/websocket_service.dart';
+import '../app_config.dart';
 
 
 class TradingProvider with ChangeNotifier {
@@ -114,7 +115,8 @@ class TradingProvider with ChangeNotifier {
   double get monthlySpent => _monthlySpent;
   double get balance => _balance;
 
-  final String _baseUrl = "http://10.0.2.2:8000"; // Android Emulator: 10.0.2.2, iOS: 127.0.0.1
+  final String _baseUrl = kHttpBase;
+
   late WebSocketService _wsService;
 
   // Watchlist State
@@ -127,9 +129,9 @@ class TradingProvider with ChangeNotifier {
     fetchPortfolio();
     fetchTrades();
 
-    // Initialize WebSocket
+    // Initialize WebSocket — IP comes from app_config.dart
     _wsService = WebSocketService(
-      url: "ws://10.0.2.2:8000/ws/market", 
+      url: "$kWsBase/ws/market",
       onMessage: ingest,
       onDone: () => debugPrint("WS Done"),
       onError: (e) => debugPrint("WS Error: $e"),
@@ -196,18 +198,32 @@ class TradingProvider with ChangeNotifier {
     }
   }
   
-  // Helper to ensure backend subscribes
+  // Helper to ensure backend subscribes to a symbol AND get initial price immediately
+  // Backend expects bare symbol (e.g. "ETERNAL"), not "ETERNAL.NS"
   Future<void> _ensureSubscription(String symbol) async {
     try {
-       // We can iterate api fetchLtp here. 
-       // Since _api is not directly here (it was in other file), we use raw http or call the one we have if we merge.
-       // The previous ApiService code handled this. 
-       // Let's assume we can make a simple HTTP generic call or use the one from main.dart's pattern?
-       // Actually, we can just use http.get here as we have http imported.
-       final url = "$_baseUrl/api/market/ltp/$symbol"; 
-       await http.get(Uri.parse(url));
+      // Strip exchange suffix so backend can find the instrument correctly
+      final bareSymbol = symbol.contains('.') ? symbol.split('.').first : symbol;
+      final url = "$_baseUrl/api/market/ltp/$bareSymbol";
+      final response = await http.get(Uri.parse(url));
+      debugPrint("Subscription for $bareSymbol: ${response.statusCode}");
+
+      // Parse the returned LTP immediately so the UI doesn't wait for a WS tick
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final ltp = data['ltp'];
+        if (ltp != null && ltp != 0) {
+          final price = (ltp is num) ? ltp.toDouble() : double.tryParse(ltp.toString());
+          if (price != null && price > 0) {
+            _prices[symbol] = price;          // with suffix e.g. ETERNAL.NS
+            _prices[bareSymbol] = price;      // without suffix e.g. ETERNAL
+            notifyListeners();
+            debugPrint("Got immediate price for $bareSymbol: $price");
+          }
+        }
+      }
     } catch (e) {
-       debugPrint("Failed to ensure subscription for $symbol: $e");
+      debugPrint("Failed to ensure subscription for $symbol: $e");
     }
   }
 

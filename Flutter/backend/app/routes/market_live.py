@@ -98,6 +98,9 @@ async def fetch_ltp(symbol: str):
     2. Fallback to REST LTP
     """
     symbol = symbol.upper()
+    # Strip exchange suffix if present (e.g. "ETERNAL.NS" -> "ETERNAL")
+    if '.' in symbol:
+        symbol = symbol.split('.')[0]
 
     # check instrument existence
     inst = find_instrument(symbol)
