@@ -1,28 +1,22 @@
-# Python
+# Environment variables (Secrets)
+.env
+**/.env
+
+# Python / Backend
 **/__pycache__/
 **/*.pyc
 **/*.pyo
-.venv/
+**/.venv/
+**/venv/
 venv/
-Flutter/backend/.venv/
+.venv/
 *.db
 *.sqlite
 
 # Logs
-logs/
-Flutter/backend/logs/
+**/logs/
+*.log
 
-# Secrets
-.env
-**/.env
-
-# Flutter build
-Flutter/flutter_application_1/build/
-Flutter/flutter_application_1/.dart_tool/
-Flutter/flutter_application_1/.flutter-plugins
-Flutter/flutter_application_1/.flutter-plugins-dependencies
-Flutter/flutter_application_1/android/.gradle/
-
-# General
+# OS generated files
 .DS_Store
 Thumbs.db
