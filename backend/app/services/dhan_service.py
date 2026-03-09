@@ -685,6 +685,12 @@ def get_ltp(symbol: str) -> float:
             _last_rest_call[symbol] = now + 30   # extra 30s penalty
             return 0.0
 
+        if resp.status_code == 401:
+            from app.services.token_renewal import handle_401_unauthorized
+            handle_401_unauthorized()
+            print(f"❌ LTP REST HTTP 401 for {symbol}: Token Expired/Invalid.")
+            return 0.0
+
         if resp.status_code != 200:
             print(f"❌ LTP REST HTTP {resp.status_code} for {symbol}: {resp.text[:200]}")
             return 0.0
@@ -804,8 +810,83 @@ def get_live_price(symbol: str) -> dict:
 
 
 # ---------------------------
-# Optional placeholder
+# Order Placement (Live REST)
 # ---------------------------
+
+def place_order(symbol: str, qty: int, direction: str, price: float = 0.0, order_type: str = "MARKET", correlation_id: str = None) -> dict:
+    """
+    Submits a real order to Dhan via the POST /v2/orders API.
+    Uses the provided correlation_id from the DB Outbox Event for exact idempotency.
+    """
+    try:
+        inst = find_instrument(symbol)
+        if not inst:
+            return {"status": "error", "error": f"Instrument not found for {symbol}"}
+
+        sid = str(inst.get("sem_smst_security_id", ""))
+        trading_symbol = inst.get("sem_trading_symbol", symbol.upper())
+        
+        if not sid:
+            return {"status": "error", "error": f"Security ID missing for {symbol}"}
+
+        url = f"{config.DHAN_REST_BASE.rstrip('/')}/v2/orders"
+        
+        transaction_type = "BUY" if direction == "LONG" else "SELL"
+        live_correlation_id = correlation_id if correlation_id else f"SIG_{int(time.time()*1000)}"
+        
+        payload = {
+            "dhanClientId": config.CLIENT_ID,
+            "correlationId": live_correlation_id,
+            "transactionType": transaction_type,
+            "exchangeSegment": "NSE_EQ",
+            "productType": "INTRADAY", # Hardcoded Intraday (MIS) for now based on strategy scope
+            "orderType": order_type,
+            "validity": "DAY",
+            "tradingSymbol": trading_symbol,
+            "securityId": sid,
+            "quantity": qty,
+            "disclosedQuantity": 0,
+            "price": price,
+            "triggerPrice": 0.0,
+            "afterMarketOrder": False,
+            "amoTime": "OPEN",
+            "boProfitValue": 0.0,
+            "boStopLossValue": 0.0,
+            "drvExpiryDate": None,
+            "drvOptionType": None,
+            "drvStrikePrice": 0.0
+        }
+
+        headers = {
+            "client-id": config.CLIENT_ID,
+            "access-token": config.ACCESS_TOKEN,
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        
+        if resp.status_code == 401:
+            from app.services.token_renewal import handle_401_unauthorized
+            handle_401_unauthorized()
+            return {"status": "error", "error": "Unauthorized (401). Token expired."}
+
+        data = resp.json()
+        
+        if resp.status_code == 200 and data.get("orderStatus") != "REJECTED":
+            return {
+                "status": "success",
+                "order_id": data.get("orderId"),
+                "raw_response": data
+            }
+        else:
+            return {
+                "status": "error",
+                "error": data.get("errorDescription") or data.get("remarks") or str(data)
+            }
+
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
 
 async def refresh_access_token():
     """Stub: implement when enabling auto token renewal."""

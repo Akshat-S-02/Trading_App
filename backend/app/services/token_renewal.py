@@ -305,6 +305,24 @@ async def _do_renewal() -> bool:
     return True
 
 
+# ── External Health Check API ─────────────────────────────────────────────────
+
+def handle_401_unauthorized():
+    """
+    Called by HTTP clients when Dhan returns HTTP 401.
+    Flags the token as invalid so the ExecutionEngine pauses immediately,
+    and forces the background loop to renew ASAP.
+    """
+    global last_renewal_ok, _next_renewal_at
+    last_renewal_ok = False
+    _next_renewal_at = time.time() - 10.0 # Force immediate loop wake
+    print("🚨 Token flagged as UNAUTHORIZED (401). Pausing execution.", flush=True)
+
+def is_token_valid() -> bool:
+    """Returns True if the system believes the token is currently active."""
+    return last_renewal_ok
+
+
 # ── Background loop ───────────────────────────────────────────────────────────
 
 async def token_renewal_loop() -> None:

@@ -7,14 +7,14 @@ def get_user(db: Session, username: str):
 def create_default_user(db: Session):
     user = get_user(db, 'admin')
     if not user:
-        user = models.User(username='admin', tokens=50000.0)
+        user = models.User(username='admin', capital_initial=50000.0, capital_current=50000.0)
         db.add(user); db.commit(); db.refresh(user)
     return user
 
 def add_tokens(db: Session, username: str, amount: float):
     user = get_user(db, username)
     if user:
-        user.tokens += amount
+        user.capital_current += amount
         db.add(user); db.commit(); db.refresh(user)
     return user
 
