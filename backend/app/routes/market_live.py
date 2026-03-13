@@ -146,14 +146,14 @@ async def fetch_ltp_batch(req: BatchLTPRequest):
         if '.' in s: s = s.split('.')[0]
         clean_symbols.append(s)
 
-    # Always subscribe to WS so we get live ticks going forward
+    # 1. Trigger WebSocket subscription for all requested symbols
     from app.websocket.market_ws import subscribe_dynamic_symbols
     await subscribe_dynamic_symbols(clean_symbols)
 
     results = {}
-    missing_from_cache = []
-
-    # 1. Check WebSocket / local cache 
+    missing = []
+    
+    # 2. Try to answer from fast local cache or stale ticks first
     for sym in clean_symbols:
         cached = get_cached_ltp(sym)
         if cached:
@@ -161,77 +161,43 @@ async def fetch_ltp_batch(req: BatchLTPRequest):
             if price > 0:
                 results[sym] = {"ltp": price, "source": "websocket"}
                 continue
-        
-        # Check stale tick
-        stale_tick = False
+                
+        found = False
         for _, data in latest_ticks.items():
             if data.get("symbol") == sym and data.get("ltp", 0) > 0:
                 results[sym] = {"ltp": data["ltp"], "source": "websocket-stale"}
-                stale_tick = True
+                found = True
                 break
-        
-        if not stale_tick:
-            missing_from_cache.append(sym)
+                
+        if not found:
+            missing.append(sym)
 
-    # 2. REST fallback ONLY for symbols missing from cache
-    if missing_from_cache:
-        rest_prices = get_ltp_batch(missing_from_cache)
-        for sym, price in rest_prices.items():
-            if price > 0:
-                results[sym] = {"ltp": price, "source": "rest"}
-            else:
-                results[sym] = {"ltp": 0.0, "source": "unavailable"}
+    # 3. Hit the Dhan REST batch API for the remainder
+    if missing:
+        api_results = get_ltp_batch(missing)
+        for sym, price in api_results.items():
+            results[sym] = {"ltp": price, "source": "rest" if price > 0 else "unavailable"}
 
     return {"results": results}
 
+# ── Dhan Search & Metadata ─────────────────────────────────────────────────
 
-
-@router.post("/order")
-def place_order(order: dict):
-    """
-    Stub for future real order placement.
-    You will connect Dhan Place Order API here.
-    """
+@router.get("/stocks")
+def list_stocks():
+    """Return a list of sample stocks or full instrument list (trimmed)."""
     return {
         "status": "ok",
-        "message": "Order endpoint stub — integrate Dhan orders here",
-        "order": order
+        "message": "Stocks API working",
+        "samples": ["RELIANCE", "TCS", "HDFCBANK"]
     }
 
-
-@router.get("/portfolio")
-def get_portfolio():
+@router.get("/search")
+def search_stocks(query: str):
     """
-    Dummy portfolio endpoint — connect portfolio API later.
+    Search for stocks by symbol or name via Dhan API.
     """
-    return {
-        "status": "ok",
-        "holdings": [],
-        "message": "Portfolio API not yet wired"
-    }
+    from app.services.dhan_service import search_instruments
+    results = search_instruments(query)
+    return {"results": results}
 
-
-
-@router.get("/ticks/{symbol}")
-def get_tick_route(symbol: str):
-    symbol = symbol.upper().strip()
-
-    # 1. Try Redis first
-    redis_tick = get_tick(symbol)
-    if redis_tick:
-        return {"symbol": symbol, "redis": redis_tick}
-
-    # 2. Fallback to in-memory tick store
-    memory_tick = get_cached_ltp(symbol)
-    if memory_tick:
-        return {"symbol": symbol, "memory": memory_tick}
-
-    # 3. Nothing found
-    return {"symbol": symbol, "error": "No tick found"}
-
-
-@router.get("/ticks/all")
-def get_all_ticks_route():
-    from app.core.tick_store import get_all_ticks
-    data = get_all_ticks()
-    return {"count": len(data), "ticks": data}
+# DEPRECATED: portfolio/order/ticks stubs removed. Use canonical /api/ equivalents.

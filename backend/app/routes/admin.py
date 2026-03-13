@@ -181,3 +181,63 @@ def update_dhan_token(body: TokenUpdateRequest, _: str = Depends(get_current_use
 
     print("🔑 Dhan ACCESS_TOKEN rotated in-memory and persisted to .env")
     return {"status": "ok", "message": "Dhan token updated. No restart needed."}
+
+
+# ── Canonical Portfolio/Trade Endpoints ─────────────────────────────────────
+
+@router.get("/api/portfolio")
+def get_portfolio(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
+    """
+    Canonical portfolio endpoint. 
+    Currently returns empty list (Sandbox). Wire to PortfolioMetrics later.
+    """
+    return []
+
+@router.get("/api/trades")
+def get_trades(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
+    """
+    Canonical trades endpoint. Returns the last 50 orders for the admin user.
+    """
+    user = crud.get_user(db, 'admin')
+    if not user:
+        return []
+        
+    orders = db.query(models.Order).filter(models.Order.user_id == user.id).order_by(models.Order.created_at.desc()).limit(50).all()
+    
+    # Format to match frontend expectations
+    return [{
+        "order_id": ord.broker_order_id or f"INT-{ord.id}",
+        "symbol": ord.symbol,
+        "qty": ord.quantity,
+        "side": "BUY" if ord.direction == models.Direction.LONG else "SELL",
+        "price": float(ord.entry_price),
+        "pnl": float(ord.pnl or 0.0),
+        "status": ord.status.value,
+        "created_at": ord.created_at
+    } for ord in orders]
+
+# ── Health & Diagnostics ─────────────────────────────────────────────────────
+
+@router.get("/api/admin/health")
+def get_system_health(_: str = Depends(get_current_user)):
+    """
+    Combined health endpoint for Broker Token and Market Feed WS statuses.
+    """
+    from app.websocket import market_ws
+    
+    token_data = get_token_status(_)
+    
+    last_tick = getattr(market_ws, 'last_ws_msg_time', 0)
+    
+    return {
+        "status": "ok",
+        "token": token_data,
+        "feed": {
+            "connected": market_ws._ws is not None,
+            "reconnecting": market_ws._running and market_ws._ws is None,
+            "stale": market_ws.stale_feed_active,
+            "last_tick_time": datetime.fromtimestamp(last_tick, tz=timezone.utc).isoformat() if last_tick else None,
+            "reconnect_count": market_ws._reconnect_count,
+            "sub_count": len(market_ws._subscribe_symbols)
+        }
+    }

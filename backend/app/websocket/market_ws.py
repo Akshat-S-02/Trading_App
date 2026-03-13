@@ -28,7 +28,7 @@ from app.core.instruments import (
     resolve_symbol_from_sid,
     get_all_instruments
 )
-from app.core.tick_store import save_tick as _tick_store_save
+# from app.core.tick_store import save_tick as _tick_store_save
 
 # ---------------------------
 # Runtime state
@@ -49,6 +49,7 @@ _subscribe_symbols: List[str] = []
 # Control flags
 _running = False
 _ws: Optional[websockets.WebSocketClientProtocol] = None
+_reconnect_count = 0
 
 # ---------------------------
 # Configurable knobs
@@ -60,7 +61,9 @@ CHUNK_SIZE = 100             # Dhan limit per request
 CHUNK_PAUSE = 0.05           # seconds pause between chunk sends
 TOP_N = 5000                 # subscribe up to 5000 instruments
 
-from fastapi import APIRouter, WebSocket
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from app.core.tick_store import get_tick, save_tick as _tick_store_save
+
 router = APIRouter()
 
 # ---------------------------
@@ -238,7 +241,7 @@ async def heal_historical_gap(disconnect_duration_seconds: float):
     stale_feed_active = False
 
 async def _connect_and_listen():
-    global _running, _ws, sid_to_symbol, last_ws_msg_time, stale_feed_active
+    global _running, _ws, sid_to_symbol, last_ws_msg_time, stale_feed_active, _reconnect_count
     backoff = BASE_RECONNECT_DELAY
     _running = True
     
@@ -253,6 +256,7 @@ async def _connect_and_listen():
         disconnect_duration = time.time() - last_ws_msg_time if 'last_ws_msg_time' in globals() else 0
 
         try:
+            _reconnect_count += 1
             async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                 _ws = ws
                 print(f"✅ Dhan WebSocket Connected")
@@ -518,3 +522,48 @@ async def websocket_endpoint(websocket: WebSocket):
             
     except Exception as e:
         print(f"❌ Flutter Client Disconnected: {e}")
+
+
+@router.websocket("/ws/ltp")
+async def ws_ltp(ws: WebSocket, symbol: str):
+    """
+    Compatibility endpoint for single-symbol LTP polling.
+    Consolidated from ws.py into market_ws.py.
+    """
+    await ws.accept()
+
+    symbol = symbol.upper().strip()
+    print(f"⚡ WS Connected for LTP Polling: {symbol}")
+
+    placeholder_sent = False
+
+    try:
+        while True:
+            tick = get_tick(symbol)
+            # print("WS LOOP tick for", symbol, "=>", tick)  # DEBUG
+
+            if tick:
+                # tick should be a dict: {"symbol": "...", "ltp": ..., "timestamp": ...}
+                await ws.send_json({
+                    "symbol": tick.get("symbol", symbol),
+                    "ltp": tick.get("ltp"),
+                    "timestamp": tick.get("timestamp"),
+                    "source": "websocket",
+                })
+                placeholder_sent = False
+            else:
+                # only send placeholder once, not spam
+                if not placeholder_sent:
+                    await ws.send_json({
+                        "symbol": symbol,
+                        "ltp": None,
+                        "source": "waiting",
+                    })
+                    placeholder_sent = True
+
+            await asyncio.sleep(0.5)
+
+    except WebSocketDisconnect:
+        print(f"❌ WS disconnected for LTP Polling: {symbol}")
+    except Exception as e:
+        print(f"⚠️ WS Error for LTP Polling ({symbol}): {e}")

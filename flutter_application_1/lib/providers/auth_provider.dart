@@ -28,7 +28,11 @@ class AuthProvider with ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _error = 'Wrong password. Try again.';
+      if (e.toString().contains('Invalid credentials')) {
+        _error = 'Wrong password. Try again.';
+      } else {
+        _error = 'Connection failed. Is the backend running on 0.0.0.0?';
+      }
       _isLoggedIn = false;
       _loading = false;
       notifyListeners();

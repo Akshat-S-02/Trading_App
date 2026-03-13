@@ -106,8 +106,8 @@ class TradingProvider with ChangeNotifier {
           if (token != null) 'Authorization': 'Bearer $token',
         },
         body: jsonEncode({
-          'daily_limit':   daily,
-          'monthly_limit': monthly,
+          'max_daily_dd':   daily,
+          'max_monthly_dd': monthly,
         }),
       );
       if (response.statusCode == 200) {

@@ -20,11 +20,65 @@ class PortfolioWidget extends StatelessWidget {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: portfolio.length,
-      itemBuilder: (context, index) =>
-          PortfolioItem(item: portfolio[index]),
+    // Calculate aggregate PnL
+    double totalInvested = 0;
+    double currentTotalValue = 0;
+
+    for (var item in portfolio) {
+      final symbol = item['symbol'] as String;
+      final avgPrice = (item['avg_price'] as num).toDouble();
+      final livePrice = context.select<MarketDataProvider, double?>(
+            (p) => p.getPrice(symbol)) ?? avgPrice;
+      
+      final invested = avgPrice * (item['qty'] as num);
+      final current = livePrice * (item['qty'] as num);
+      totalInvested += invested;
+      currentTotalValue += current;
+    }
+
+    final totalPnl = currentTotalValue - totalInvested;
+    final totalPnlPercent = totalInvested == 0 ? 0.0 : (totalPnl / totalInvested) * 100;
+
+    return Column(
+      children: [
+        // Top PnL Summary Card
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.grey[900],
+            border: const Border(bottom: BorderSide(color: Colors.white12)),
+          ),
+          child: Column(
+            children: [
+              const Text('Open P&L', style: TextStyle(color: Colors.white70, fontSize: 14)),
+              const SizedBox(height: 8),
+              Text(
+                '${totalPnl >= 0 ? '+' : ''}₹${totalPnl.abs().toStringAsFixed(2)}',
+                style: TextStyle(
+                  color: totalPnl >= 0 ? Colors.greenAccent : Colors.redAccent,
+                  fontSize: 36,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${totalPnl >= 0 ? '+' : ''}${totalPnlPercent.toStringAsFixed(2)}%',
+                style: TextStyle(color: totalPnl >= 0 ? Colors.greenAccent : Colors.redAccent, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+        
+        // List of holdings
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: portfolio.length,
+            itemBuilder: (context, index) => PortfolioItem(item: portfolio[index]),
+          ),
+        ),
+      ],
     );
   }
 }

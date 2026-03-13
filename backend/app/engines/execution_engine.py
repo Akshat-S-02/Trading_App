@@ -142,10 +142,14 @@ class ExecutionEngine:
                 current_time = datetime.now(timezone.utc)
                 if user.portfolio_metrics:
                     last_sync = user.portfolio_metrics.last_margin_sync
-                    if last_sync and (current_time - last_sync).total_seconds() > 30:
-                        logger.warning(f"User {user.username} rejected via Stale Margin Guard: Cache is > 30s old.")
-                        sync_dispatch_alert("WARNING", "Stale Margin Cache", f"Blocked execution for {user.username}. Cache delta > 30s.")
-                        continue
+                    if last_sync:
+                        if (current_time - last_sync).total_seconds() > 30:
+                            logger.warning(f"User {user.username} rejected via Stale Margin Guard: Cache is > 30s old.")
+                            sync_dispatch_alert("WARNING", "Stale Margin Cache", f"Blocked execution for {user.username}. Cache delta > 30s.")
+                            continue
+                    else:
+                        # User-requested honest logging for sandbox bypass
+                        logger.info(f"stale-margin guard bypassed for {user.username}: no margin sync exists yet (sandbox mode assumption active)")
                         
                     if user.portfolio_metrics.available_margin < estimated_margin_required:
                         # In a real scenario, this helps pre-empt a broker HTTP 400 rejection

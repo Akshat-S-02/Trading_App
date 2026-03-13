@@ -26,41 +26,54 @@ class OrdersWidget extends StatelessWidget {
         final isBuy = trade['side'] == 'BUY';
         final price = (trade['price'] as num).toDouble();
         
+        final status = trade['status'] as String? ?? 'UNKNOWN';
+        final orderId = trade['order_id'] ?? 'N/A';
+        final timeStr = trade['created_at'] != null ? trade['created_at'].toString().split('T').last.split('.').first : '--:--:--';
+        
+        Color statusColor = Colors.grey;
+        if (status == 'NEW') statusColor = Colors.blueAccent;
+        else if (status == 'FILLED') statusColor = Colors.greenAccent;
+        else if (status == 'REJECTED') statusColor = Colors.redAccent;
+        else if (status == 'FAILED_RETRYABLE' || status == 'FAILED') statusColor = Colors.orangeAccent;
+        
         return Card(
           color: Colors.grey[900],
           margin: const EdgeInsets.only(bottom: 8),
           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: isBuy ? Colors.green.withOpacity(0.2) : Colors.red.withOpacity(0.2),
-              child: Icon(
-                isBuy ? Icons.arrow_downward : Icons.arrow_upward,
-                color: isBuy ? Colors.green : Colors.red,
-                size: 20,
-              ),
-            ),
-            title: Text(
-              trade['symbol'],
-              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-            ),
-            subtitle: Text(
-              "${trade['created_at']}".split('T')[0], // Simple date formatting
-              style: const TextStyle(color: Colors.white54, fontSize: 12),
-            ),
-            trailing: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.end,
+          child: Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  "${isBuy ? 'BUY' : 'SELL'} ${trade['qty']}",
-                  style: TextStyle(
-                    color: isBuy ? Colors.greenAccent : Colors.redAccent,
-                    fontWeight: FontWeight.bold,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "${trade['symbol']} ${isBuy ? 'BUY' : 'SELL'}",
+                      style: TextStyle(
+                        color: isBuy ? Colors.greenAccent : Colors.redAccent,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                    Text(timeStr, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+                  ],
                 ),
-                Text(
-                  "@ ₹${price.toStringAsFixed(2)}",
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                const SizedBox(height: 12),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("Status: $status", style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 13)),
+                    Text("Order ID: $orderId", style: const TextStyle(color: Colors.white54, fontSize: 11)),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text("Qty: ${trade['qty']}", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                    Text("Avg Price: ₹${price.toStringAsFixed(2)}", style: const TextStyle(color: Colors.white70, fontSize: 13)),
+                  ],
                 ),
               ],
             ),

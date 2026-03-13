@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../widgets/ltp_widget.dart';
 import '../services/api_service.dart';
 import '../providers/market_data_provider.dart';
+import '../providers/health_provider.dart';
 import '../app_config.dart';
 
 class MarketWidget extends StatefulWidget {
@@ -22,6 +23,42 @@ class _MarketWidgetState extends State<MarketWidget> {
   Widget build(BuildContext context) {
     return Column(
       children: [
+        // Feed Freshness Indicator
+        Consumer<HealthProvider>(
+          builder: (context, health, child) {
+            final isLive = health.isFeedHealthy;
+            final isStale = health.isFeedConnected && !isLive;
+            if (isLive) {
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 16),
+                color: Colors.green.withOpacity(0.1),
+                child: const Text('Feed: 🟢 Live',
+                  style: TextStyle(color: Colors.greenAccent, fontWeight: FontWeight.bold, fontSize: 12),
+                  textAlign: TextAlign.center,
+                ),
+              );
+            } else {
+              return Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+                color: Colors.red[900],
+                child: Column(
+                  children: [
+                    const Text('🔴 MARKET DATA STALE',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 1.2),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(isStale ? 'Last tick: ${health.lastTickAgeSec.toStringAsFixed(1)}s ago' : 'WebSocket is DISCONNECTED',
+                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                  ],
+                ),
+              );
+            }
+          },
+        ),
+
         // Search Bar
         Padding(
           padding: const EdgeInsets.all(16.0),

@@ -5,9 +5,9 @@
 library app_config;
 
 // ─── Change only this line ───────────────────────────────────────────────────
-// const String kBackendHost ="192.168.0.110";
+const String kBackendHost ="192.168.0.113";
     // "192.168.0.107";
-const String kBackendHost = "10.0.2.2";  // ← uncomment for emulator
+// const String kBackendHost = "10.0.2.2";  // ← uncomment for emulator
 // ─────────────────────────────────────────────────────────────────────────────
 
 const int    kBackendPort = 8000;

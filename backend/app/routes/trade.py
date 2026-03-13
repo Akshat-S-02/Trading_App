@@ -5,7 +5,7 @@ from .. import crud, models
 from ..schemas import TradeIn
 from ..auth import get_current_user
 
-router = APIRouter()
+router = APIRouter(prefix="/sandbox")
 
 def get_db():
     db = SessionLocal()
@@ -33,26 +33,6 @@ def place_trade(trade: TradeIn, db: Session = Depends(get_db), _: str = Depends(
     )
     db.add(new_order)
     db.commit()
-    return {"status":"ok", "message": "Trade registered in new Order schema"}
+    return {"status":"ok", "message": "Manual trade registered in sandbox Order schema"}
 
-@router.get("/api/portfolio")
-def get_portfolio(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
-    # Returns empty for now, to be replaced by PortfolioMetrics logic
-    return []
-
-@router.get("/api/trades")
-def get_trades(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
-    user = crud.get_user(db, 'admin')
-    if not user:
-        return []
-        
-    orders = db.query(models.Order).filter(models.Order.user_id == user.id).order_by(models.Order.created_at.desc()).limit(50).all()
-    # Format to match frontend expectations temporarily
-    return [{
-        "symbol": ord.symbol,
-        "qty": ord.quantity,
-        "side": "BUY" if ord.direction == models.Direction.LONG else "SELL",
-        "price": ord.entry_price,
-        "pnl": ord.pnl,
-        "created_at": ord.created_at
-    } for ord in orders]
+# DEPRECATED: portfolio/trades moved to canonical /api/ in admin.py

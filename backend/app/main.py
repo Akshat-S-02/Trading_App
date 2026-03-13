@@ -100,6 +100,12 @@
 # app.include_router(ticks_router)
 
 
+import sys
+if sys.platform == "win32":
+    # Force utf-8 encoding on Windows console to prevent emoji crashes
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
 import asyncio
 from fastapi import FastAPI
 
@@ -109,7 +115,6 @@ from app.routes.ticks import router as ticks_router
 from app.websocket.market_ws import start_ws_background_task, subscribe_symbols
 from app.core.instruments import load_instruments
 from app.routes.admin import router as admin_router
-from app.routes import ws, ws_routes
 from app.db import engine, Base
 from app.config import config  # needed for JWT_SECRET startup check
 # Create tables
@@ -161,7 +166,19 @@ async def startup_event():
     finally:
         db.close()
 
-    # Load instrument CSV → builds sid_to_symbol map
+    # 1. Validate / Refresh Token synchronously
+    import time
+    from app.services.token_renewal import _token_exp, _do_renewal
+    exp = _token_exp(config.ACCESS_TOKEN)
+    if not exp or exp < time.time():
+        print("⚠️ Token is missing or expired at startup. Force-renewing now...", flush=True)
+        success = await _do_renewal()
+        if not success:
+            print("🚨 FATAL: Could not acquire valid Dhan token at startup. Exec engine will fail.", flush=True)
+    else:
+        print("✅ Token validated at startup.", flush=True)
+
+    # 2. Load instrument CSV → builds sid_to_symbol map
     try:
         load_instruments()
     except Exception as e:
@@ -182,9 +199,6 @@ async def startup_event():
     
     asyncio.create_task(start_ws_background_task())
 
-    # Start AI Engine (Sandbox)
-    from app.ai_engine import simple_momentum_loop
-    asyncio.create_task(simple_momentum_loop())
 
     # Start Dhan token auto-renewal (daily at 08:15 IST, 1h before market open)
     from app.services.token_renewal import token_renewal_loop
