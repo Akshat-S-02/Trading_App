@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import '../app_config.dart';
 import '../services/auth_service.dart';
 
 /// Thin ChangeNotifier wrapper around [AuthService].
@@ -21,6 +23,22 @@ class AuthProvider with ChangeNotifier {
     _loading = true;
     _error = null;
     notifyListeners();
+    
+    // 1. Pre-flight health check
+    try {
+      final res = await http.get(Uri.parse(kHttpBase)).timeout(const Duration(seconds: 3));
+      if (res.statusCode != 200) {
+        throw Exception("Backend returned ${res.statusCode}");
+      }
+    } catch (e) {
+      _error = '❌ Cannot reach backend at ${AppConfig.backendHost}\nCheck that:\n• Backend is running\n• Phone and PC are on same Wi-Fi\n• Port ${AppConfig.backendPort} is correct';
+      _isLoggedIn = false;
+      _loading = false;
+      notifyListeners();
+      return false;
+    }
+
+    // 2. Actual authentication
     try {
       await AuthService.login(username, password);
       _isLoggedIn = true;
@@ -31,7 +49,7 @@ class AuthProvider with ChangeNotifier {
       if (e.toString().contains('Invalid credentials')) {
         _error = 'Wrong password. Try again.';
       } else {
-        _error = 'Connection failed. Is the backend running on 0.0.0.0?';
+        _error = 'Connection dropped during login.';
       }
       _isLoggedIn = false;
       _loading = false;

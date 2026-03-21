@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from research.db import init_db, SessionLocal
 from research.data.models import IngestionJob, IngestionJobStatus
 from research.data.instrument_repository import get_nifty50_instruments, get_instrument
-from research.data.candle_repository import upsert_candles, get_latest_timestamp
+from research.data.candle_repository import upsert_candles, get_latest_timestamp, get_earliest_timestamp
 from research.services.historical_data_service import fetch_daily, fetch_intraday
 
 logging.basicConfig(
@@ -119,21 +119,45 @@ def run_backfill(timeframe: str, years: int, symbols: list[str] | None = None):
 
         logger.info(f"\n--- {symbol} (id={security_id}) ---")
 
-        # For intraday: check if we can start from latest stored timestamp (resume support)
+        # For intraday: build chunk ranges that fill both backwards AND forwards
+        # relative to any existing data, so extending --years always works.
         if timeframe != "1d":
-            latest = get_latest_timestamp(security_id, timeframe)
-            effective_from = max(from_date, (latest + timedelta(minutes=1))) if latest else from_date
+            latest   = get_latest_timestamp(security_id, timeframe)
+            earliest = get_earliest_timestamp(security_id, timeframe)
+
+            ranges_to_fill: list[tuple[datetime, datetime]] = []
+
+            if latest is None:
+                # No data at all — fetch the full range
+                ranges_to_fill.append((from_date, to_date))
+            else:
+                # Backward fill: from_date → earliest stored (if from_date is older)
+                if from_date < earliest:
+                    ranges_to_fill.append((from_date, earliest - timedelta(minutes=1)))
+                # Forward fill: latest stored → to_date
+                forward_start = latest + timedelta(minutes=1)
+                if forward_start < to_date:
+                    ranges_to_fill.append((forward_start, to_date))
+
+            if not ranges_to_fill:
+                logger.info(f"  {symbol}: already has full coverage. Skipping.")
+                continue
+
+            effective_from = ranges_to_fill[0][0]  # for the skip check below
         else:
+            ranges_to_fill = [(from_date, to_date)]
             effective_from = from_date
 
-        if effective_from >= to_date:
+        if effective_from >= to_date and not ranges_to_fill:
             logger.info(f"  {symbol}: already up to date. Skipping.")
             continue
 
         # For intraday, use chunked approach with per-chunk job tracking
         if timeframe != "1d":
             interval_min = int(timeframe.replace("m", ""))
-            chunks = _chunk_date_range(effective_from, to_date)
+            chunks = []
+            for range_from, range_to in ranges_to_fill:
+                chunks.extend(_chunk_date_range(range_from, range_to))
 
             for chunk_from, chunk_to in chunks:
                 from_str = chunk_from.strftime("%Y-%m-%d")
@@ -211,8 +235,8 @@ if __name__ == "__main__":
     parser.add_argument("--timeframe", default="5m",
                         choices=["1m", "5m", "15m", "25m", "60m", "1d"],
                         help="Candle interval (default: 5m)")
-    parser.add_argument("--years", type=int, default=2,
-                        help="Years of history to fetch (default: 2)")
+    parser.add_argument("--years", type=int, default=5,
+                        help="Years of history to fetch (default: 5)")
     parser.add_argument("--symbols", nargs="*",
                         help="Optional: limit to specific symbols (e.g. RELIANCE TCS)")
     args = parser.parse_args()

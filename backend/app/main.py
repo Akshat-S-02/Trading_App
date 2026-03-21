@@ -225,3 +225,7 @@ app.include_router(market_ws.router)
 
 from app.routes import trade
 app.include_router(trade.router)
+
+# Paper Trading Engine
+from app.routes.paper import router as paper_router
+app.include_router(paper_router)

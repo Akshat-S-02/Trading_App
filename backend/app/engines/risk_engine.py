@@ -55,7 +55,7 @@ class RiskGate:
             db.commit()
 
     @staticmethod
-    def validate_risk(db: Session, user: models.User, system_settings: models.SystemSettings, signal: Signal, current_time: datetime = None) -> bool:
+    def validate_risk(db: Session, user: models.User, system_settings: models.SystemSettings, signal: Signal, portfolio_snapshot: dict = None, current_time: datetime = None) -> bool:
         """
         Validates if the user is allowed to take a new trade.
         """
@@ -87,6 +87,12 @@ class RiskGate:
         # 2. User Level Flag
         if not user.automation_enabled:
             logger.warning(f"RiskGate Blocked: Automation disabled for user {user.username}.")
+            return False
+            
+        # 2.2 Portfolio Snapshot Health
+        if portfolio_snapshot and portfolio_snapshot.get("missing_cmp"):
+            logger.error(f"RiskGate Blocked: Cannot accurately size risk because Live CMP is missing for open positions belonging to {user.username}.")
+            # Fail closed as requested by structural safety rules
             return False
             
         # 2.5 Kill-Switch Escalation Logic (Anomaly Clustering)
@@ -128,7 +134,14 @@ class RiskGate:
             
         # 6. Forward-Looking Daily & Monthly Drawdown Limit
         metrics = user.portfolio_metrics
-        current_daily_loss = abs(Decimal(str(metrics.realized_pnl))) if metrics and metrics.realized_pnl < 0 else Decimal('0.0')
+        realized_daily_loss = abs(Decimal(str(metrics.realized_pnl))) if metrics and metrics.realized_pnl < 0 else Decimal('0.0')
+        
+        # Phase 3: Unrealized Drawdown Assessment
+        unrealized_pnl = portfolio_snapshot.get("unrealized_pnl", Decimal('0.0')) if portfolio_snapshot else Decimal('0.0')
+        current_daily_loss = realized_daily_loss
+        if unrealized_pnl < 0:
+            current_daily_loss += abs(unrealized_pnl)
+            
         max_daily_loss_amount = Decimal(str(user.capital_current)) * (Decimal(str(user.max_daily_dd)) / Decimal('100.0'))
         
         # Monthly Drop Check

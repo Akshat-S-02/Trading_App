@@ -60,6 +60,10 @@ HEARTBEAT_TIMEOUT = 60.0     # seconds without any meaningful packet -> reconnec
 CHUNK_SIZE = 100             # Dhan limit per request
 CHUNK_PAUSE = 0.05           # seconds pause between chunk sends
 TOP_N = 5000                 # subscribe up to 5000 instruments
+BINARY_TICK_TIMEOUT = 10.0   # seconds without a valid binary tick -> reconnect
+
+# Global bounded queue to safely decouple Strategy Execution from WS stream
+tick_queue = asyncio.Queue(maxsize=5000)
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from app.core.tick_store import get_tick, save_tick as _tick_store_save
@@ -199,22 +203,45 @@ def parse_binary_message(b: bytes):
 # Main WebSocket Loop
 # ---------------------------
 last_ws_msg_time = time.time()
+last_binary_tick_time = time.time()
 stale_feed_active = False
 
 from app.core.alerts import async_dispatch_alert
 
 async def ws_watchdog():
-    global last_ws_msg_time, stale_feed_active, _ws
+    global last_ws_msg_time, last_binary_tick_time, stale_feed_active, _ws
     while _running:
         await asyncio.sleep(1)
-        if _ws and (time.time() - last_ws_msg_time > HEARTBEAT_TIMEOUT):
+        
+        now = time.time()
+        # 1. Connection-level check (heartbeat)
+        is_connection_stale = (now - last_ws_msg_time > HEARTBEAT_TIMEOUT)
+        
+        # 2. Binary stream check (silent gap)
+        # Only check binary silence during market hours (9:15 - 15:30)
+        import zoneinfo
+        from datetime import datetime
+        _IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+        now_dt = datetime.now(_IST)
+        
+        is_market_open = (now_dt.hour == 9 and now_dt.minute >= 15) or (9 < now_dt.hour < 15) or (now_dt.hour == 15 and now_dt.minute <= 30)
+        
+        # Bypass for automated testing
+        if getattr(config, "WATCHDOG_DEBUG_MODE", False):
+            is_market_open = True
+
+        is_binary_stale = is_market_open and (now - last_binary_tick_time > BINARY_TICK_TIMEOUT)
+        
+        if _ws and (is_connection_stale or is_binary_stale):
             if not stale_feed_active:
-                print(f"🚨 STALE_FEED BREAKER TRIPPED: No ticks received in {HEARTBEAT_TIMEOUT}s. Forcing reconnect.")
+                reason = "HEARTBEAT_TIMEOUT" if is_connection_stale else "BINARY_TICK_SILENCE"
+                limit = HEARTBEAT_TIMEOUT if is_connection_stale else BINARY_TICK_TIMEOUT
+                print(f"🚨 STALE_FEED BREAKER TRIPPED: {reason} (> {limit}s). Forcing reconnect.")
                 stale_feed_active = True
                 asyncio.create_task(async_dispatch_alert(
                     level="CRITICAL",
-                    title="STALE_FEED WebSocket Disconnect",
-                    message=f"No ticks received from Dhan in {HEARTBEAT_TIMEOUT} seconds. Cut connection and initialized historical gap healing."
+                    title=f"STALE_FEED: {reason}",
+                    message=f"No data received from Dhan in {limit} seconds. Forcing reconnect and historical gap healing."
                 ))
             
             # Close the socket to force the reconnect loop
@@ -226,18 +253,80 @@ async def ws_watchdog():
 async def heal_historical_gap(disconnect_duration_seconds: float):
     """
     Called strictly sequentially upon WebSocket reconnection.
-    Fetches the missing 1-minute candles from Dhan REST historical API
+    Fetches the missing 5-minute candles from Dhan REST historical API
     and pushes them through the strategy engines sequentially to restore MA/ATR states.
     """
-    print(f"🩺 HEALING ALGORITHM TRIGGERED: Fetching past {int(disconnect_duration_seconds)}s of historical candles...")
-    # In a fully integrated env, this would:
-    # 1. Fetch from /custom/history API
-    # 2. Iterate each resolved symbol's candles
-    # 3. Call StrategyEngine.on_bar() chronologically
-    # 4. Finally, unblock the STALE_FEED breaker.
-    await asyncio.sleep(2) # Simulated API call
-    print("✅ HISTORICAL GAP HEALED. Strategy states organically restored.")
-    global stale_feed_active
+    print(f"HEALING ALGORITHM TRIGGERED: Fetching past historical candles...")
+    import zoneinfo
+    from datetime import datetime, timedelta, time
+    _IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+    now_ist = datetime.now(_IST)
+    
+    session_start = now_ist.replace(hour=9, minute=15, second=0, microsecond=0)
+    if now_ist < session_start or now_ist.time() > time(15, 30):
+        print("Market closed. No gap healing needed.")
+        global stale_feed_active
+        stale_feed_active = False
+        return
+
+    from app.engines.paper_strategy_runner import get_runner
+    runner = get_runner()
+    
+    # 1. Determine last universally completed bucket time
+    # Runner's aggregator tracks `last_bucket` in IST.
+    last_bucket = runner._aggregator.last_bucket
+    if last_bucket is None or last_bucket < session_start:
+        fetch_from = session_start
+    else:
+        # Start looking from the exact next bucket that was missed
+        fetch_from = last_bucket + timedelta(minutes=5)
+
+    # 2. End of fetch window: the current time rounded down to 5 min
+    fetch_to = now_ist.replace(minute=(now_ist.minute // 5) * 5, second=0, microsecond=0)
+    
+    if fetch_from >= fetch_to:
+        print("✅ No complete 5-min candles missed. Resuming...")
+        stale_feed_active = False
+        return
+
+    print(f"Fetch window: {fetch_from.strftime('%H:%M')} -> {fetch_to.strftime('%H:%M')} IST")
+    
+    from research.services.historical_data_service import fetch_intraday
+    from app.engines.paper_strategy_runner import MOMENTUM5_UNIVERSE
+    from app.core.instruments import get_security_id_multi
+    
+    symbols = MOMENTUM5_UNIVERSE
+    resolved = get_security_id_multi(symbols)
+    
+    all_candles = []
+    
+    for sym in symbols:
+        sid = resolved.get(sym)
+        if not sid:
+            continue
+        try:
+            # fetch intraday is blocking, run in thread to keep WS async healthy
+            candles = await asyncio.to_thread(
+                fetch_intraday, str(sid), sym, 5, fetch_from, fetch_to
+            )
+            all_candles.extend(candles)
+        except Exception as e:
+            print(f"⚠️ Failed to fetch healing candles for {sym}: {e}")
+            
+    if not all_candles:
+        print("No historical data returned. Proceeding...")
+        stale_feed_active = False
+        return
+        
+    # 3. Sort chronologically across all symbols!
+    all_candles.sort(key=lambda c: c["timestamp"])
+    
+    print(f"Replaying {len(all_candles)} completed candles through strategy sequentially...")
+    
+    for c in all_candles:
+        runner.feed_historical_candle(c["symbol"], c)
+
+    print("✅ HISTORICAL GAP HEALED. Strategy state fully restored.")
     stale_feed_active = False
 
 async def _connect_and_listen():
@@ -257,12 +346,17 @@ async def _connect_and_listen():
 
         try:
             _reconnect_count += 1
+            is_first_connect = (_reconnect_count == 1)
+            
             async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
                 _ws = ws
                 print(f"✅ Dhan WebSocket Connected")
-                last_ws_msg_time = time.time()
                 
-                if stale_feed_active or disconnect_duration > 15:
+                # Heal if: 
+                # 1. We were stale (watchdog tripped)
+                # 2. We were disconnected for a while (>15s)
+                # 3. This is the very first connect of the process (Cold Boot)
+                if stale_feed_active or disconnect_duration > 15 or is_first_connect:
                     await heal_historical_gap(disconnect_duration)
                 
                 stale_feed_active = False
@@ -288,6 +382,9 @@ async def _connect_and_listen():
                     if isinstance(msg, (bytes, bytearray)):
                         parsed = parse_binary_message(bytes(msg))
                         if parsed and "ltp" in parsed:
+                            global last_binary_tick_time
+                            last_binary_tick_time = time.time()
+                            
                             # Skip processing if we're mid-healing to prevent time paradoxes
                             if stale_feed_active:
                                 continue
@@ -314,6 +411,13 @@ async def _connect_and_listen():
                                     if _now - _redis_warn_last > 60:
                                         print(f"⚠ tick_store Redis write failed (suppressing for 60s): {_redis_err}")
                                         _redis_warn_last = _now
+
+                                # Forward tick to Paper Strategy Runner
+                                # Queue it for background processing to prevent asyncio event loop blocking!
+                                try:
+                                    tick_queue.put_nowait((sym.upper(), ltp, 0, None))
+                                except asyncio.QueueFull:
+                                    print(f"⚠️ CRITICAL: Tick Queue Full! Dropping tick for {sym.upper()}")
                     else:
                         pass  # Text message (handshake, errors)
 
@@ -442,10 +546,38 @@ async def fetch_initial_data():
     except Exception as e:
         print(f"⚠️ Failed to fetch initial snapshot: {e}")
 
+async def _tick_processor():
+    """
+    Consumes ticks sequentially from the bounded queue.
+    Executes heavy DB/strategy calculations in a python thread to decouple from the asyncio WS loop.
+    """
+    print("Tick Processor Consumer Started")
+    from app.engines.paper_strategy_runner import get_runner
+    
+    while _running:
+        try:
+            sym, ltp, vol, tick_time = await tick_queue.get()
+            try:
+                q_size = tick_queue.qsize()
+                
+                # Monitor performance lag
+                if q_size > 100 and q_size % 100 == 0:
+                    print(f"⚠️ Tick Processor Lagging. Queue depth: {q_size}")
+                    
+                # Wait for execution in thread-pool to force chronologically sequential state modification 
+                await asyncio.to_thread(get_runner().feed_tick, sym, ltp, vol, tick_time)
+            finally:
+                tick_queue.task_done()
+        except Exception as e:
+            print(f"⚠️ Tick Processor Global Error: {e}")
+            await asyncio.sleep(1)
+
 
 async def start_ws_background_task():
     # Create task for WS loop so it doesn't block startup
     asyncio.create_task(_connect_and_listen())
+    # Create task for sequential async WS tick consumer
+    asyncio.create_task(_tick_processor())
     # Create task for initial fetch
     asyncio.create_task(fetch_initial_data())
 

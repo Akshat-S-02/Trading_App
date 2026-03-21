@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import 'app_config.dart';
 import 'providers/auth_provider.dart';
 import 'providers/market_data_provider.dart';
 import 'providers/trading_provider.dart';
@@ -11,6 +12,7 @@ import 'services/auth_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await AppConfig.loadHost();
   // Require password on every cold start for security
   await AuthService.logout();
   runApp(const MyApp(isLoggedIn: false));

@@ -118,6 +118,20 @@ class Settings(BaseSettings):
     DHAN_PIN: str = ""
     DHAN_TOTP_SECRET: str = ""
 
+    # ── Execution Mode ─────────────────────────────────────────
+    # "sandbox" = UI only, no execution
+    # "paper"   = route to PaperBroker (realistic fills with slippage)
+    # "live"    = route to Dhan REST API
+    EXECUTION_MODE: str = "paper"
+
+    # ── Paper Broker Config ────────────────────────────────────
+    PAPER_FILL_DELAY_MS_MIN: int = 100     # min simulated fill latency
+    PAPER_FILL_DELAY_MS_MAX: int = 500     # max simulated fill latency
+    PAPER_SLIPPAGE_TICKS: int = 2          # 1 tick = ₹0.05
+
+    # ── Watchdog ───────────────────────────────────────────────
+    WATCHDOG_DEBUG_MODE: bool = False      # Bypass market hours check for tests
+
 
 config = Settings()
 

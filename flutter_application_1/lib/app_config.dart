@@ -1,16 +1,20 @@
-/// Central configuration — change ONE line to switch between device and emulator.
-///
-/// Android Emulator : 10.0.2.2
-/// Physical Device  : 172.20.10.2  (your hotspot/LAN IP)
-library app_config;
+import 'package:shared_preferences/shared_preferences.dart';
 
-// ─── Change only this line ───────────────────────────────────────────────────
-const String kBackendHost ="192.168.0.113";
-    // "192.168.0.107";
-// const String kBackendHost = "10.0.2.2";  // ← uncomment for emulator
-// ─────────────────────────────────────────────────────────────────────────────
+class AppConfig {
+  static String backendHost = "192.168.0.113"; // Default fallback
+  static const int backendPort = 8003;
 
-const int    kBackendPort = 8000;
+  static Future<void> loadHost() async {
+    final prefs = await SharedPreferences.getInstance();
+    backendHost = prefs.getString('backend_host') ?? "192.168.0.113";
+  }
 
-const String kHttpBase = "http://$kBackendHost:$kBackendPort";
-const String kWsBase   = "ws://$kBackendHost:$kBackendPort";
+  static Future<void> saveHost(String host) async {
+    final prefs = await SharedPreferences.getInstance();
+    backendHost = host;
+    await prefs.setString('backend_host', host);
+  }
+}
+
+String get kHttpBase => "http://${AppConfig.backendHost}:${AppConfig.backendPort}";
+String get kWsBase   => "ws://${AppConfig.backendHost}:${AppConfig.backendPort}";

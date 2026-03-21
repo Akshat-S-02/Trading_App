@@ -13,8 +13,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '.
 
 from app.db import SessionLocal
 from app.models import OutboxEvent, OutboxEventStatus, Order, OrderStatus, User
-from app.services.dhan_service import place_order
+from app.services.dhan_service import place_order as dhan_place_order
+from app.broker.paper_broker import place_order as paper_place_order
 from app.engines.execution_engine import ExecutionEngine
+from app.config import config
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("OutboxWorker")
@@ -62,17 +64,41 @@ class OutboxWorker:
         order = self.db.query(Order).filter(Order.id == event.order_id).first()
         
         try:
-            # 3. Fire to Live API
-            logger.info(f"[{self.worker_id}] Dispatching live execution: {qty}x {symbol} | CorrId: {correlation_id}")
+            # 3. Route based on EXECUTION_MODE
+            mode = config.EXECUTION_MODE.lower()
             
-            resp = place_order(
-                symbol=symbol,
-                qty=qty,
-                direction=direction,
-                price=price,
-                order_type=order_type,
-                correlation_id=correlation_id
-            )
+            if mode == "sandbox":
+                # Sandbox = UI only, skip execution entirely
+                logger.info(f"[{self.worker_id}] SANDBOX mode: skipping execution for {qty}x {symbol}")
+                event.status = OutboxEventStatus.COMPLETED
+                if order:
+                    order.status = OrderStatus.SUBMITTED
+                    order.broker_order_id = f"SANDBOX_{correlation_id or 'NOOP'}"
+                self.db.commit()
+                return True
+            
+            elif mode == "paper":
+                logger.info(f"[{self.worker_id}] PAPER mode: simulating fill for {qty}x {symbol} | CorrId: {correlation_id}")
+                resp = paper_place_order(
+                    symbol=symbol,
+                    qty=qty,
+                    direction=direction,
+                    price=price,
+                    order_type=order_type,
+                    correlation_id=correlation_id,
+                )
+            
+            else:
+                # Live mode — real Dhan REST API
+                logger.info(f"[{self.worker_id}] LIVE mode: dispatching to Dhan for {qty}x {symbol} | CorrId: {correlation_id}")
+                resp = dhan_place_order(
+                    symbol=symbol,
+                    qty=qty,
+                    direction=direction,
+                    price=price,
+                    order_type=order_type,
+                    correlation_id=correlation_id,
+                )
             
             if resp.get("status") == "success":
                 # 4a. Success Path
@@ -83,7 +109,34 @@ class OutboxWorker:
                     order.status = OrderStatus.SUBMITTED
                     order.broker_order_id = broker_id
                 
-                logger.info(f"[{self.worker_id}] SUCCESS. Broker ID: {broker_id}")
+                # 4a.1 PAPER MODE: Immediately process fill
+                # In live mode, fills arrive via Dhan WebSocket.
+                # In paper mode, there is no WS — so we complete the
+                # full lifecycle (SUBMITTED → FILLED) right here.
+                if mode == "paper" and order:
+                    paper_meta = resp.get("paper_meta", {})
+                    fill_price_val = paper_meta.get("fill_price", price)
+
+                    # Enrich paper_meta with signal-level context
+                    paper_meta["signal_price"] = price
+                    paper_meta["execution_mode"] = "paper"
+
+                    from decimal import Decimal
+                    self.engine.handle_partial_fill(
+                        order_id=order.id,
+                        filled_qty=qty,
+                        fill_price=Decimal(str(fill_price_val)),
+                        fill_id=broker_id,
+                        paper_meta=paper_meta,
+                    )
+                    logger.info(
+                        f"[{self.worker_id}] PAPER FILL complete: "
+                        f"{qty}x {symbol} @ {fill_price_val} "
+                        f"| slippage={paper_meta.get('slippage_ticks')} ticks "
+                        f"| latency={paper_meta.get('latency_ms', 0):.0f}ms"
+                    )
+                else:
+                    logger.info(f"[{self.worker_id}] SUCCESS. Broker ID: {broker_id}")
             else:
                 # 4b. Broker Rejection Path (e.g. Insufficient margin from exchange)
                 error_msg = resp.get("error", "Unknown API error")
@@ -103,7 +156,11 @@ class OutboxWorker:
         except Exception as e:
             # 4c. Structural Crash Path (e.g. network timeout, 500 error, DB constraint)
             logger.error(f"[{self.worker_id}] Outbox Execution CRASH: {e}")
-            self._schedule_retry(event)
+            try:
+                self.db.rollback()
+                self._schedule_retry(event)
+            except Exception as retry_err:
+                logger.error(f"[{self.worker_id}] FATAL: Failed to schedule retry for Event {event.id}: {retry_err}")
             
         finally:
             self.db.commit()

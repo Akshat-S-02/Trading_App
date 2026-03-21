@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/market_data_provider.dart';
 import '../providers/trading_provider.dart';
+import '../app_config.dart';
 import 'dashboard_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -14,15 +15,24 @@ class LoginScreen extends StatefulWidget {
 
 class _LoginScreenState extends State<LoginScreen> {
   final _passwordCtrl = TextEditingController();
+  final _hostCtrl = TextEditingController();
   bool _obscure = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _hostCtrl.text = AppConfig.backendHost;
+  }
 
   @override
   void dispose() {
     _passwordCtrl.dispose();
+    _hostCtrl.dispose();
     super.dispose();
   }
 
   Future<void> _login() async {
+    await AppConfig.saveHost(_hostCtrl.text.trim());
     final auth = context.read<AuthProvider>();
     final success = await auth.login('admin', _passwordCtrl.text.trim());
     if (success && mounted) {
@@ -70,6 +80,30 @@ class _LoginScreenState extends State<LoginScreen> {
               Text('Enter your password to continue',
                   style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 14)),
               const SizedBox(height: 40),
+              TextField(
+                controller: _hostCtrl,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Server IP (e.g. 192.168.1.10)',
+                  hintStyle: TextStyle(color: Colors.white.withOpacity(0.35)),
+                  filled: true,
+                  fillColor: const Color(0xFF161B22),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFF30363D)),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFF30363D)),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(color: Color(0xFF0072FF), width: 1.5),
+                  ),
+                  prefixIcon: const Icon(Icons.dns_outlined, color: Color(0xFF0072FF)),
+                ),
+              ),
+              const SizedBox(height: 16),
               TextField(
                 controller: _passwordCtrl,
                 obscureText: _obscure,

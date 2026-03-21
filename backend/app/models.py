@@ -43,6 +43,7 @@ class OrderStatus(str, enum.Enum):
     CONFIRMED = "CONFIRMED"               # Exchange accepted
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     FILLED = "FILLED"
+    CLOSED = "CLOSED"                     # Round-trip complete (Exit processed)
     CANCELLED = "CANCELLED"
     REJECTED = "REJECTED"                 # Broker/Exchange rejected
     FAILED_RETRYABLE = "FAILED_RETRYABLE" # Outbox transient network failure
@@ -187,8 +188,14 @@ class Order(Base):
     rejection_count = Column(Integer, default=0)
     broker_order_id = Column(String, index=True, nullable=True) # DYNAMIC LIVE FILL TRACKING
     
+    signal_timestamp = Column(DateTime(timezone=True), nullable=True) # True market time of the generated signal, disjoint from processing latency
+    
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    
+    # Exit Engine tracking
+    exit_reason = Column(String, nullable=True) # e.g. "SL", "TARGET", "EOD"
+    close_requested_at = Column(DateTime(timezone=True), nullable=True)
     
     # Latency Telemetry (Phase 3)
     signal_creation_time = Column(DateTime(timezone=True), nullable=True)
@@ -213,6 +220,12 @@ class TradeFill(Base):
     price = Column(Numeric(15, 4))
     
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Paper trading validation metrics (Phase 4)
+    # Stores: signal_price, fill_price, slippage_ticks, latency_ms,
+    #         realized_r, mae_r, mfe_r, signal_to_bar_close_delay_ms,
+    #         paper_fill_vs_next_bar_open, execution_mode
+    paper_meta = Column(JSON, nullable=True)
     
     # Relationships
     order = relationship("Order", back_populates="fills")

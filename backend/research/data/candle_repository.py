@@ -158,3 +158,25 @@ def get_latest_timestamp(security_id: str, timeframe: str) -> Optional[datetime]
         return row[0] if row else None
     finally:
         db.close()
+
+
+def get_earliest_timestamp(security_id: str, timeframe: str) -> Optional[datetime]:
+    """
+    Return the oldest timestamp stored for this security_id+timeframe.
+    Returns None if no data exists yet.
+    Used by backfill to determine if backward-fill is needed.
+    """
+    db: Session = SessionLocal()
+    try:
+        row = (
+            db.query(HistoricalCandle.timestamp)
+            .filter(
+                HistoricalCandle.security_id == security_id,
+                HistoricalCandle.timeframe   == timeframe,
+            )
+            .order_by(HistoricalCandle.timestamp.asc())
+            .first()
+        )
+        return row[0] if row else None
+    finally:
+        db.close()
