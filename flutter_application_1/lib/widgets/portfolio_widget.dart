@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/market_data_provider.dart';
 import '../providers/trading_provider.dart';
+import '../theme/brutal_theme.dart';
+import 'brutal/brutal.dart';
 
 class PortfolioWidget extends StatelessWidget {
   const PortfolioWidget({super.key});
@@ -12,16 +14,15 @@ class PortfolioWidget extends StatelessWidget {
         (p) => p.portfolio);
 
     if (portfolio.isEmpty) {
-      return const Center(
-        child: Text(
-          'No Holdings',
-          style: TextStyle(color: Colors.white54, fontSize: 16),
-        ),
+      return const BrutalEmpty(
+        title: 'No holdings',
+        subtitle: 'Open the terminal to place a sandbox order',
+        icon: Icons.pie_chart_outline,
       );
     }
 
     return ListView.builder(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.fromLTRB(16, 8, 20, 24),
       itemCount: portfolio.length,
       itemBuilder: (context, index) =>
           PortfolioItem(item: portfolio[index]),
@@ -31,8 +32,15 @@ class PortfolioWidget extends StatelessWidget {
 
 class PortfolioItem extends StatelessWidget {
   final dynamic item;
+  final bool compact;
+  final VoidCallback? onTap;
 
-  const PortfolioItem({super.key, required this.item});
+  const PortfolioItem({
+    super.key,
+    required this.item,
+    this.compact = false,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -50,65 +58,73 @@ class PortfolioItem extends StatelessWidget {
     final pnlPercent   = investValue == 0
         ? 0.0
         : (pnl / investValue) * 100;
+    final pnlColor = Brutal.signColor(pnl);
 
-    return Card(
-      color: const Color(0xFF212121),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      margin: const EdgeInsets.only(bottom: 12),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(symbol,
-                    style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white)),
-                Text('Qty: $qty',
-                    style: const TextStyle(color: Colors.white70)),
-              ],
-            ),
-            const Divider(color: Colors.white24),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+    return Padding(
+      padding: EdgeInsets.only(bottom: compact ? 8 : 12),
+      child: InkWell(
+        onTap: onTap,
+        child: BrutalBox(
+          shadow: compact ? 0 : 3,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                child: Row(
                   children: [
-                    const Text('Invested',
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    Text('₹${investValue.toStringAsFixed(2)}',
-                        style: const TextStyle(color: Colors.white)),
+                    Expanded(
+                      child: Text(symbol,
+                          overflow: TextOverflow.ellipsis,
+                          style: Brutal.display(
+                              size: compact ? 14 : 17, weight: FontWeight.w800)),
+                    ),
+                    BrutalTag('Qty $qty', color: Brutal.accent),
                   ],
                 ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
+              ),
+              Container(height: Brutal.border, color: Brutal.ink),
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const Text('Current',
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    Text('₹${currentValue.toStringAsFixed(2)}',
-                        style: const TextStyle(color: Colors.white)),
-                  ],
-                ),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    const Text('P&L',
-                        style: TextStyle(color: Colors.white54, fontSize: 12)),
-                    Text(
+                    _cell('Invested', Brutal.money(investValue)),
+                    Container(width: 1.5, color: Brutal.ink),
+                    _cell('Current', Brutal.money(currentValue)),
+                    Container(width: 1.5, color: Brutal.ink),
+                    _cell(
+                      'P&L',
                       '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)}'
-                      ' (${pnlPercent.toStringAsFixed(2)}%)',
-                      style: TextStyle(
-                        color: pnl >= 0 ? Colors.greenAccent : Colors.redAccent,
-                        fontWeight: FontWeight.bold,
-                      ),
+                          ' (${pnlPercent.toStringAsFixed(2)}%)',
+                      color: pnlColor,
                     ),
                   ],
                 ),
-              ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _cell(String label, String value, {Color color = Brutal.ink}) {
+    return Expanded(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label.toUpperCase(), style: Brutal.label(size: 10)),
+            const SizedBox(height: 3),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(value,
+                  style: Brutal.mono(
+                      size: compact ? 12 : 13,
+                      weight: FontWeight.w800,
+                      color: color)),
             ),
           ],
         ),

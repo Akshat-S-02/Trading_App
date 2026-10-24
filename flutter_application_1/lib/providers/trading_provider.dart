@@ -96,6 +96,48 @@ class TradingProvider with ChangeNotifier {
     }
   }
 
+  /// Place a manual sandbox order via POST /api/trade/place.
+  /// The backend fills at its own latest price and enforces balance,
+  /// holdings and spend limits; on success all trading data is refreshed.
+  Future<OrderResult> placeOrder({
+    required String symbol,
+    required String side,
+    required double qty,
+    double? stopLoss,
+  }) async {
+    try {
+      final headers = await AuthService.authHeaders();
+      final response = await http.post(
+        Uri.parse('$_baseUrl/api/trade/place'),
+        headers: headers,
+        body: jsonEncode({
+          'symbol': symbol,
+          'qty': qty,
+          'side': side,
+          if (stopLoss != null) 'stop_loss': stopLoss,
+        }),
+      );
+      final body = response.body.isNotEmpty ? jsonDecode(response.body) : null;
+      if (response.statusCode == 200 && body is Map) {
+        await Future.wait([fetchUserLimits(), fetchPortfolio(), fetchTrades()]);
+        return OrderResult(
+          ok: true,
+          message: '${body['message'] ?? 'Order executed'}',
+          price: (body['price'] as num?)?.toDouble(),
+          value: (body['value'] as num?)?.toDouble(),
+        );
+      }
+      final detail = body is Map ? body['detail'] : null;
+      return OrderResult(
+        ok: false,
+        message: detail != null ? '$detail' : 'Order rejected [${response.statusCode}]',
+      );
+    } catch (e) {
+      debugPrint('❌ placeOrder exception: $e');
+      return OrderResult(ok: false, message: 'Could not reach backend');
+    }
+  }
+
   Future<bool> setLimits(double daily, double monthly) async {
     try {
       final token = await AuthService.getToken();
@@ -120,4 +162,13 @@ class TradingProvider with ChangeNotifier {
     }
     return false;
   }
+}
+
+class OrderResult {
+  final bool ok;
+  final String message;
+  final double? price;
+  final double? value;
+
+  OrderResult({required this.ok, required this.message, this.price, this.value});
 }

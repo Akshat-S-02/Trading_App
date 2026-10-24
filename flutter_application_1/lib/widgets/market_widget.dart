@@ -4,6 +4,8 @@ import '../widgets/ltp_widget.dart';
 import '../services/api_service.dart';
 import '../providers/market_data_provider.dart';
 import '../app_config.dart';
+import '../theme/brutal_theme.dart';
+import 'brutal/brutal.dart';
 
 class MarketWidget extends StatefulWidget {
   const MarketWidget({super.key});
@@ -24,23 +26,18 @@ class _MarketWidgetState extends State<MarketWidget> {
       children: [
         // Search Bar
         Padding(
-          padding: const EdgeInsets.all(16.0),
+          padding: const EdgeInsets.fromLTRB(16, 12, 20, 12),
           child: TextField(
             controller: _searchController,
-            style: const TextStyle(color: Colors.white),
+            style: Brutal.mono(size: 15, weight: FontWeight.w700),
+            textCapitalization: TextCapitalization.characters,
             decoration: InputDecoration(
-              hintText: 'Search stocks (e.g. RELIANCE)...',
-              hintStyle: const TextStyle(color: Colors.white54),
-              prefixIcon: const Icon(Icons.search, color: Colors.white54),
-              filled: true,
-              fillColor: Colors.grey[900],
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide.none,
-              ),
+              hintText: 'SEARCH — e.g. RELIANCE',
+              prefixIcon: const Icon(Icons.search, color: Brutal.ink),
               suffixIcon: _searchController.text.isNotEmpty
                   ? IconButton(
-                      icon: const Icon(Icons.clear, color: Colors.white54),
+                      tooltip: 'Clear search',
+                      icon: const Icon(Icons.close, color: Brutal.ink),
                       onPressed: () {
                         _searchController.clear();
                         _performSearch('');
@@ -90,16 +87,17 @@ class _MarketWidgetState extends State<MarketWidget> {
     final watchlist = context.watch<MarketDataProvider>().watchlist;
 
     if (watchlist.isEmpty) {
-      return const Center(
-        child: Text('Watchlist is empty',
-            style: TextStyle(color: Colors.white54)),
+      return const BrutalEmpty(
+        title: 'Watchlist is empty',
+        subtitle: 'Search above to add NSE stocks',
+        icon: Icons.playlist_add,
       );
     }
 
     return ListView.builder(
       physics: const BouncingScrollPhysics(
           parent: AlwaysScrollableScrollPhysics()),
-      padding: const EdgeInsets.only(left: 16, right: 16, bottom: 80),
+      padding: const EdgeInsets.only(left: 16, right: 20, bottom: 24),
       itemCount: watchlist.length,
       itemBuilder: (context, index) {
         final symbol = watchlist[index];
@@ -116,15 +114,13 @@ class _MarketWidgetState extends State<MarketWidget> {
 
   Widget _buildSearchResults() {
     if (_searchResults.isEmpty) {
-      return const Center(
-          child: Text('No results found',
-              style: TextStyle(color: Colors.white54)));
+      return const BrutalEmpty(title: 'No results found', icon: Icons.search_off);
     }
 
     return ListView.builder(
       physics: const BouncingScrollPhysics(
           parent: AlwaysScrollableScrollPhysics()),
-      padding: const EdgeInsets.only(bottom: 80),
+      padding: const EdgeInsets.only(bottom: 24),
       itemCount: _searchResults.length,
       itemBuilder: (context, index) {
         final item = _searchResults[index];
@@ -132,20 +128,44 @@ class _MarketWidgetState extends State<MarketWidget> {
         final name     = item['name']   ?? '';
         final exchange = item['exchange'] ?? '';
 
-        return ListTile(
-          leading: CircleAvatar(
-            backgroundColor: Colors.indigoAccent,
-            child: Text(symbol.isNotEmpty ? symbol[0] : '?',
-                style: const TextStyle(color: Colors.white)),
-          ),
-          title: Text(symbol,
-              style: const TextStyle(
-                  color: Colors.white, fontWeight: FontWeight.bold)),
-          subtitle: Text('$name • $exchange',
-              style: const TextStyle(color: Colors.white70)),
-          trailing: IconButton(
-            icon: const Icon(Icons.add_circle, color: Colors.greenAccent),
-            onPressed: () => _addToWatchlist(symbol),
+        return Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 20, 10),
+          child: BrutalBox(
+            shadow: 3,
+            padding: const EdgeInsets.fromLTRB(10, 8, 6, 8),
+            child: Row(
+              children: [
+                Container(
+                  width: 38,
+                  height: 38,
+                  alignment: Alignment.center,
+                  color: Brutal.ink,
+                  child: Text(symbol.isNotEmpty ? symbol[0] : '?',
+                      style: Brutal.display(
+                          size: 18, weight: FontWeight.w900, color: Brutal.accent)),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(symbol,
+                          style: Brutal.display(size: 15, weight: FontWeight.w800)),
+                      const SizedBox(height: 2),
+                      Text('$name • $exchange',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Brutal.mono(size: 11, color: Brutal.muted)),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  tooltip: 'Add $symbol to watchlist',
+                  icon: const Icon(Icons.add_box, color: Brutal.ink, size: 28),
+                  onPressed: () => _addToWatchlist(symbol),
+                ),
+              ],
+            ),
           ),
         );
       },

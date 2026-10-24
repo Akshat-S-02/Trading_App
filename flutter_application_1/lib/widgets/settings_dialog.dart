@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/trading_provider.dart';
+import '../theme/brutal_theme.dart';
+import 'brutal/brutal.dart';
 
 class SettingsDialog extends StatefulWidget {
   const SettingsDialog({super.key});
@@ -54,9 +56,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     final monthly = double.tryParse(_monthlyCtrl.text.trim()) ?? 0;
 
     if (daily <= 0 || monthly <= 0) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please enter valid positive limits')),
-      );
+      showBrutalSnack(context, 'Please enter valid positive limits', isError: true);
       return;
     }
 
@@ -66,76 +66,89 @@ class _SettingsDialogState extends State<SettingsDialog> {
     if (mounted) {
       setState(() => _isLoading = false);
       if (success) {
+        showBrutalSnack(context, 'Limits updated successfully');
         Navigator.pop(context);
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('✅ Limits updated successfully')),
-        );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('❌ Failed to update limits. Check your connection.'),
-            backgroundColor: Colors.red,
-          ),
-        );
+        showBrutalSnack(context, 'Failed to update limits. Check your connection.',
+            isError: true);
       }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: Row(
-        children: [
-          const Expanded(
-            child: Text('Risk Management Settings'),
-          ),
-          if (_isFetching) ...[
-            const SizedBox(width: 10),
-            const SizedBox(
-              width: 16, height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2),
+    return Dialog(
+      insetPadding: const EdgeInsets.all(20),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 440),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            BrutalStrip(
+              index: 'RM',
+              title: 'Risk Management',
+              actions: [
+                if (_isFetching)
+                  const SizedBox(
+                    width: 14, height: 14,
+                    child: CircularProgressIndicator(
+                        strokeWidth: 2, color: Brutal.accent),
+                  ),
+              ],
+            ),
+            Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('MAX SANDBOX SPEND PER PERIOD', style: Brutal.label()),
+                  const SizedBox(height: 14),
+                  TextField(
+                    controller: _dailyCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    enabled: !_isFetching,
+                    style: Brutal.mono(size: 16, weight: FontWeight.w700),
+                    decoration: const InputDecoration(
+                      labelText: 'DAILY SPEND LIMIT (₹)',
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _monthlyCtrl,
+                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                    enabled: !_isFetching,
+                    style: Brutal.mono(size: 16, weight: FontWeight.w700),
+                    decoration: const InputDecoration(
+                      labelText: 'MONTHLY SPEND LIMIT (₹)',
+                    ),
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: BrutalButton(
+                          label: 'Cancel',
+                          color: Brutal.white,
+                          onPressed: () => Navigator.pop(context),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: BrutalButton(
+                          label: 'Save',
+                          loading: _isLoading,
+                          onPressed: (_isLoading || _isFetching) ? null : _save,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ],
-        ],
-      ),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            controller: _dailyCtrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            enabled: !_isFetching,
-            decoration: const InputDecoration(
-              labelText: 'Daily Spend Limit (₹)',
-              border: OutlineInputBorder(),
-            ),
-          ),
-          const SizedBox(height: 16),
-          TextField(
-            controller: _monthlyCtrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            enabled: !_isFetching,
-            decoration: const InputDecoration(
-              labelText: 'Monthly Spend Limit (₹)',
-              border: OutlineInputBorder(),
-            ),
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
         ),
-        ElevatedButton(
-          onPressed: (_isLoading || _isFetching) ? null : _save,
-          child: _isLoading
-              ? const SizedBox(
-                  width: 20, height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2))
-              : const Text('Save'),
-        ),
-      ],
+      ),
     );
   }
 }

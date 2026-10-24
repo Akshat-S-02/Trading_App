@@ -7,6 +7,7 @@ import 'providers/trading_provider.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
+import 'theme/brutal_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,7 +37,7 @@ class MyApp extends StatelessWidget {
       child: MaterialApp(
         debugShowCheckedModeBanner: false,
         title: 'AI Stock Trader (Sandbox)',
-        theme: ThemeData.dark(),
+        theme: Brutal.theme(),
         home: isLoggedIn ? const DashboardScreen() : const LoginScreen(),
       ),
     );

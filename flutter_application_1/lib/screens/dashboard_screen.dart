@@ -6,6 +6,9 @@ import '../widgets/market_widget.dart';
 import '../widgets/portfolio_widget.dart';
 import '../widgets/orders_widget.dart';
 import '../widgets/settings_dialog.dart';
+import '../theme/brutal_theme.dart';
+import '../widgets/brutal/brutal.dart';
+import 'terminal_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -41,21 +44,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (index == 2) trading.fetchTrades();
   }
 
+  void _openTerminal() {
+    Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const TerminalScreen()),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final trading = context.watch<TradingProvider>();
 
     return Scaffold(
-      backgroundColor: Colors.black,
       appBar: AppBar(
-        title: const Text('AI Stock Trader (Sandbox)'),
-        centerTitle: true,
-        backgroundColor: Colors.indigo,
-        foregroundColor: Colors.white,
-        elevation: 0,
+        titleSpacing: 12,
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              color: Brutal.ink,
+              child: Text('AI/TRADER',
+                  style: Brutal.display(
+                      size: 16, weight: FontWeight.w900, color: Brutal.accent)),
+            ),
+            const SizedBox(width: 8),
+            const BrutalTag('Sandbox', color: Brutal.accent),
+          ],
+        ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.settings),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: BrutalButton(
+              label: 'Terminal',
+              icon: Icons.terminal,
+              height: 40,
+              fontSize: 12,
+              color: Brutal.ink,
+              foreground: Brutal.accent,
+              onPressed: _openTerminal,
+            ),
+          ),
+          const SizedBox(width: 10),
+          BrutalIconButton(
+            icon: Icons.tune,
+            tooltip: 'Risk settings',
             onPressed: () {
               showDialog(
                 context: context,
@@ -63,96 +94,129 @@ class _DashboardScreenState extends State<DashboardScreen> {
               );
             },
           ),
+          const SizedBox(width: 12),
         ],
       ),
       body: Column(
         children: [
           // Balance & Limits header
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: const BoxDecoration(
-              color: Colors.indigo,
-              borderRadius: BorderRadius.only(
-                bottomLeft: Radius.circular(24),
-                bottomRight: Radius.circular(24),
-              ),
-            ),
-            child: Column(
-              children: [
-                const Text(
-                  'Sandbox Balance',
-                  style: TextStyle(color: Colors.white70, fontSize: 14),
-                ),
-                Text(
-                  '₹${trading.balance.toStringAsFixed(2)}',
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 20, 8),
+            child: BrutalBox(
+              color: Brutal.accent,
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text('SANDBOX BALANCE', style: Brutal.label(color: Brutal.ink)),
+                  const SizedBox(height: 4),
+                  FittedBox(
+                    alignment: Alignment.centerLeft,
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      Brutal.money(trading.balance),
+                      style: Brutal.mono(size: 36, weight: FontWeight.w800),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                _buildProgressBar('Daily Limit',
-                    trading.dailySpent, trading.dailyLimit, Colors.orangeAccent),
-                const SizedBox(height: 8),
-                _buildProgressBar('Monthly Limit',
-                    trading.monthlySpent, trading.monthlyLimit, Colors.purpleAccent),
-              ],
+                  const SizedBox(height: 14),
+                  BrutalMeter(
+                      label: 'Daily limit',
+                      spent: trading.dailySpent,
+                      limit: trading.dailyLimit),
+                  const SizedBox(height: 10),
+                  BrutalMeter(
+                      label: 'Monthly limit',
+                      spent: trading.monthlySpent,
+                      limit: trading.monthlyLimit),
+                ],
+              ),
             ),
           ),
 
           Expanded(child: _pages[_selectedIndex]),
         ],
       ),
-      bottomNavigationBar: BottomNavigationBar(
-        backgroundColor: Colors.grey[900],
-        selectedItemColor: Colors.indigoAccent,
-        unselectedItemColor: Colors.white54,
+      bottomNavigationBar: _BrutalNav(
         currentIndex: _selectedIndex,
         onTap: _onItemTapped,
         items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.candlestick_chart),
-            label: 'Market',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.pie_chart),
-            label: 'Portfolio',
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.history),
-            label: 'Orders',
-          ),
+          (Icons.candlestick_chart, 'Market'),
+          (Icons.pie_chart_outline, 'Portfolio'),
+          (Icons.receipt_long, 'Orders'),
         ],
       ),
     );
   }
+}
 
-  Widget _buildProgressBar(
-      String label, double spent, double limit, Color color) {
-    final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(label,
-                style: const TextStyle(color: Colors.white70, fontSize: 12)),
-            Text(
-              '₹${spent.toStringAsFixed(0)} / ₹${limit.toStringAsFixed(0)}',
-              style: const TextStyle(color: Colors.white, fontSize: 12),
-            ),
-          ],
+class _BrutalNav extends StatelessWidget {
+  final int currentIndex;
+  final ValueChanged<int> onTap;
+  final List<(IconData, String)> items;
+
+  const _BrutalNav({
+    required this.currentIndex,
+    required this.onTap,
+    required this.items,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Brutal.paper,
+        border: Border(top: Brutal.side),
+      ),
+      child: SafeArea(
+        top: false,
+        child: SizedBox(
+          height: 64,
+          child: Row(
+            children: [
+              for (var i = 0; i < items.length; i++)
+                Expanded(
+                  child: Semantics(
+                    button: true,
+                    selected: i == currentIndex,
+                    label: items[i].$2,
+                    child: InkWell(
+                      onTap: () => onTap(i),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: i == currentIndex ? Brutal.ink : Brutal.paper,
+                          border: i == 0
+                              ? null
+                              : const Border(left: Brutal.side),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(items[i].$1,
+                                size: 22,
+                                color: i == currentIndex
+                                    ? Brutal.accent
+                                    : Brutal.ink),
+                            const SizedBox(height: 4),
+                            Text(
+                              '0${i + 1} ${items[i].$2.toUpperCase()}',
+                              style: Brutal.mono(
+                                size: 11,
+                                weight: FontWeight.w800,
+                                color: i == currentIndex
+                                    ? Brutal.accent
+                                    : Brutal.ink,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
         ),
-        const SizedBox(height: 4),
-        LinearProgressIndicator(
-          value: progress,
-          backgroundColor: Colors.white24,
-          color: color,
-          borderRadius: BorderRadius.circular(4),
-        ),
-      ],
+      ),
     );
   }
 }
