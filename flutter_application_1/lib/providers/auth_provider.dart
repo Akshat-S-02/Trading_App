@@ -1,4 +1,6 @@
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
+import '../app_config.dart';
 import '../services/auth_service.dart';
 
 /// Thin ChangeNotifier wrapper around [AuthService].
@@ -21,6 +23,24 @@ class AuthProvider with ChangeNotifier {
     _loading = true;
     _error = null;
     notifyListeners();
+
+    // Pre-flight: tell "backend unreachable" apart from "wrong password".
+    try {
+      final res = await http
+          .get(Uri.parse(kHttpBase))
+          .timeout(const Duration(seconds: 4));
+      if (res.statusCode != 200) {
+        throw Exception('Backend returned ${res.statusCode}');
+      }
+    } catch (e) {
+      _error = 'Cannot reach backend at $kBackendHost:$kBackendPort. '
+          'Check it is running and the host/port in app_config.dart.';
+      _isLoggedIn = false;
+      _loading = false;
+      notifyListeners();
+      return false;
+    }
+
     try {
       await AuthService.login(username, password);
       _isLoggedIn = true;
@@ -28,7 +48,9 @@ class AuthProvider with ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      _error = 'Wrong password. Try again.';
+      _error = e.toString().contains('Invalid credentials')
+          ? 'Wrong password. Try again.'
+          : 'Connection dropped during login.';
       _isLoggedIn = false;
       _loading = false;
       notifyListeners();
