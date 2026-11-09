@@ -4,6 +4,7 @@ from decimal import Decimal
 from datetime import datetime
 
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from app.db import require_test_db; require_test_db()  # this script deletes data
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -11,8 +12,7 @@ from app.db import Base
 from app.models import User, Order, OrderStatus, Direction, RiskCategory
 from app.engines.reconciliation_engine import ReconciliationService
 
-DATABASE_URL = "postgresql://postgres:Akshat%401311@localhost:5432/trading_sandbox"
-engine = create_engine(DATABASE_URL)
+from app.db import engine  # same (guarded, *_test) database as require_test_db() checked
 Base.metadata.create_all(bind=engine)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 

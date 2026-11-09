@@ -7,6 +7,11 @@ python-dotenv
 httpx
 sqlalchemy
 psycopg2-binary
+psycopg[binary]
 yfinance
 python-jose[cryptography]
-passlib[bcrypt]
+pydantic-settings
+redis
+apscheduler
+pyotp
+

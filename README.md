@@ -40,6 +40,7 @@ While fully functional as a simulated sandbox, the project has the following lim
 2. **Missing Real-Time Portfolio Sync:** Portfolio metrics update manually rather than passively listening to an active WebSocket ticker for *owned* shares.
 3. **Hardware Constraints:** Pushing thousands of ticks a second to a Flutter frontend can get heavy. The Python backend currently buffers and broadcasts updates on a `500ms` loop to prevent overwhelming the device CPU.
 4. **Single-User Focus:** Although Authentication is implemented and the DB supports multiple users, the frontend assumes a single sandbox account (`admin`) on boot. User registration flows would be needed for a SaaS product.
+5. **No public HTTPS (on hold):** The API listens on port 8000 over plain `http://` / `ws://`, which is closed on the public IP; the app reaches it over Tailscale (`100.102.217.43`, set in `flutter_application_1/lib/app_config.dart`), so traffic is already encrypted and Tailscale must be on for the phone to connect. Login is rate-limited (5 tries, then a 5-minute lockout). If the server is ever exposed outside Tailscale, put Caddy in front first (e.g. `13-200-209-203.sslip.io`, ports 80/443) and switch `kHttpBase`/`kWsBase` to `https://`/`wss://`.
 
 ---
 

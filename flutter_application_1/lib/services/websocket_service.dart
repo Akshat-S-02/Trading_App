@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 

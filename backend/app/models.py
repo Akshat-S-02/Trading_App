@@ -152,6 +152,7 @@ class Signal(Base):
     direction = Column(Enum(Direction))
     entry_price = Column(Numeric(15, 4))
     stop_loss = Column(Numeric(15, 4), nullable=True)
+    target_price = Column(Numeric(15, 4), nullable=True)  # Profit target; None = no target
     signal_hash = Column(String, unique=True, index=True) # NEW: Idempotency Key
     
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
@@ -171,6 +172,7 @@ class Order(Base):
     signal_hash = Column(String, index=True, nullable=True) # NEW: DB Level Idempotency
     
     # Order metadata
+    strategy_name = Column(String, index=True, nullable=True) # NEW: Strategy identifier for EV Filter
     symbol = Column(String, index=True)
     direction = Column(Enum(Direction))
     quantity = Column(Integer)

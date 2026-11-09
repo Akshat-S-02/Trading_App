@@ -2,7 +2,7 @@
 Production-ready Dhan Market Feed websocket client.
 - Subscribes to top 5000 NSE_EQ instruments (chunked by 100).
 - Parses binary packets (ticker/quote/full/prev_close).
-- Updates tick store via app.core.tick_store.update_tick.
+- Writes each tick to Redis (tick_store.save_tick) and the shared in-memory latest_ticks.
 - Robust reconnect, heartbeat, exponential backoff, and optional token-refresh hook.
 """
 
@@ -12,7 +12,6 @@ import struct
 import time
 import random
 import traceback
-# import yfinance as yf # Fallback removed
 from typing import Dict, List, Optional
 
 import websockets
@@ -25,17 +24,14 @@ from app.config import config
 from app.core import instruments as core_instruments
 from app.core.instruments import (
     get_security_id_multi,
-    resolve_symbol_from_sid,
-    get_all_instruments
 )
-# from app.core.tick_store import save_tick as _tick_store_save
 
 # ---------------------------
 # Runtime state
 # ---------------------------
 
-# Latest ticks (redundant with tick_store but handy here too)
-latest_ticks: Dict[int, dict] = {}
+# Latest tick per security id; the same dict tick_store / market routes read
+from app.core.tick_store import latest_ticks
 
 # Redis write failure ratelimit: warn at most once per 60 seconds
 _redis_warn_last: float = 0.0
@@ -61,12 +57,33 @@ CHUNK_SIZE = 100             # Dhan limit per request
 CHUNK_PAUSE = 0.05           # seconds pause between chunk sends
 TOP_N = 5000                 # subscribe up to 5000 instruments
 BINARY_TICK_TIMEOUT = 10.0   # seconds without a valid binary tick -> reconnect
+SUBSCRIBE_REQUEST_CODE = 17  # Quote mode: includes cumulative day volume
+
+# Last cumulative day volume per security id, for per-tick volume deltas
+_last_cum_volume: Dict[int, int] = {}
+
+
+def volume_delta(sid: int, cum_volume: Optional[int]) -> int:
+    """
+    Convert Dhan's cumulative day volume into traded volume since the last tick.
+    The first packet seen for a sid only sets the baseline (returns 0) so the
+    whole day's volume isn't dumped into one candle; a drop in the cumulative
+    value (new session) also resets the baseline.
+    """
+    if cum_volume is None or cum_volume < 0:
+        return 0
+    prev = _last_cum_volume.get(sid)
+    _last_cum_volume[sid] = cum_volume
+    if prev is None or cum_volume < prev:
+        return 0
+    return cum_volume - prev
 
 # Global bounded queue to safely decouple Strategy Execution from WS stream
 tick_queue = asyncio.Queue(maxsize=5000)
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from app.core.tick_store import get_tick, save_tick as _tick_store_save
+from app.auth import decode_token
 
 router = APIRouter()
 
@@ -81,34 +98,6 @@ def build_ws_url() -> str:
     if token and client_id:
         return f"{base}?version=2&token={token}&clientId={client_id}&authType=2"
     return base
-
-
-# ---------------------------
-# Instrument selection: top 5000 NSE_EQ
-# ---------------------------
-def build_top_5000_sids() -> List[int]:
-    """
-    Build top 5000 NSE_EQ security ids from instruments CSV.
-    If no volume column present, this will return the first matching NSE_EQ ids.
-    """
-    try:
-        df = get_all_instruments()
-        if df is None or df.empty:
-            return []
-
-        # Filter NSE and Equity rows. 
-        # Note: Adjust column names based on your actual CSV schema
-        mask = (df['sem_exm_exch_id'] == 'NSE') & (df['sem_series'] == 'EQ')
-        filtered = df[mask]
-        
-        # If we had volume, we would sort. For now, just take top N.
-        # filtered = filtered.sort_values(by='sem_total_volume', ascending=False)
-        
-        sliced = filtered.head(TOP_N)
-        return sliced['sem_smst_security_id'].astype(int).tolist()
-    except Exception:
-        # traceback.print_exc()
-        return []
 
 
 # ---------------------------
@@ -127,22 +116,22 @@ async def subscribe_sids(ws, sids: List[int]):
         chunk = sids[i : i + CHUNK_SIZE]
         
         # Build packet
-        # RequestCode 15 = Subscribe on Dhan
+        # RequestCode 17 = Subscribe Quote on Dhan (15 = Ticker carries no volume,
+        # which left every candle with volume=0 and broke volume-based strategies)
         # ExchangeSegment: "NSE_EQ" usually works for equity
         instrument_list = [
             {"ExchangeSegment": "NSE_EQ", "SecurityId": str(sid)}
             for sid in chunk
         ]
-        
+
         msg = {
-            "RequestCode": 15,
+            "RequestCode": SUBSCRIBE_REQUEST_CODE,
             "InstrumentCount": len(instrument_list),
             "InstrumentList": instrument_list
         }
         
         try:
             await ws.send(json.dumps(msg))
-            print(f"📡 SENT SUBSCRIPTION for {len(chunk)} instruments: {[x['SecurityId'] for x in instrument_list]}")
             await asyncio.sleep(CHUNK_PAUSE)
         except Exception as e:
             print(f"⚠️ Error subscribing chunk: {e}")
@@ -169,7 +158,6 @@ def parse_binary_message(b: bytes):
             if len(b) < 16: return None
             ltp = struct.unpack("<f", b[8:12])[0]
             timestamp = struct.unpack("<i", b[12:16])[0]
-            # print(f"🔍 DECODED TICKER: SID={security_id} LTP={ltp}")
             return {"type": "ticker", "security_id": security_id, "ltp": ltp, "time": timestamp}
 
         # PREV CLOSE PACKET (CODE 6)
@@ -180,18 +168,24 @@ def parse_binary_message(b: bytes):
             return {"type": "prev_close", "security_id": security_id, "prev_close": prev_close}
 
         # QUOTE PACKET (CODE 4)
+        # Layout: LTP f32 [8:12], LTQ i16 [12:14], LTT i32 [14:18], ATP f32 [18:22],
+        #         Volume i32 [22:26] (cumulative for the day), ...
         if response_code == 4:
             if len(b) < 50: return None
             ltp = struct.unpack("<f", b[8:12])[0]
             ltt = struct.unpack("<i", b[14:18])[0]
-            return {"type": "quote", "security_id": security_id, "ltp": ltp, "time": ltt}
+            volume = struct.unpack("<i", b[22:26])[0]
+            return {"type": "quote", "security_id": security_id, "ltp": ltp, "time": ltt, "cum_volume": volume}
 
-        # FULL PACKET (CODE 8)
+        # FULL PACKET (CODE 8) — same leading layout as QUOTE
         if response_code == 8:
             if len(b) < 18: return None
             ltp = struct.unpack("<f", b[8:12])[0]
             ltt = struct.unpack("<i", b[14:18])[0]
-            return {"type": "full", "security_id": security_id, "ltp": ltp, "time": ltt}
+            parsed = {"type": "full", "security_id": security_id, "ltp": ltp, "time": ltt}
+            if len(b) >= 26:
+                parsed["cum_volume"] = struct.unpack("<i", b[22:26])[0]
+            return parsed
 
         return None
 
@@ -232,7 +226,7 @@ async def ws_watchdog():
 
         is_binary_stale = is_market_open and (now - last_binary_tick_time > BINARY_TICK_TIMEOUT)
         
-        if _ws and (is_connection_stale or is_binary_stale):
+        if _ws and (is_connection_stale or is_binary_stale) and not stale_feed_active:
             if not stale_feed_active:
                 reason = "HEARTBEAT_TIMEOUT" if is_connection_stale else "BINARY_TICK_SILENCE"
                 limit = HEARTBEAT_TIMEOUT if is_connection_stale else BINARY_TICK_TIMEOUT
@@ -311,7 +305,7 @@ async def heal_historical_gap(disconnect_duration_seconds: float):
             )
             all_candles.extend(candles)
         except Exception as e:
-            print(f"⚠️ Failed to fetch healing candles for {sym}: {e}")
+            print(f"WARN Failed to fetch healing candles for {sym}: {e}")
             
     if not all_candles:
         print("No historical data returned. Proceeding...")
@@ -326,7 +320,7 @@ async def heal_historical_gap(disconnect_duration_seconds: float):
     for c in all_candles:
         runner.feed_historical_candle(c["symbol"], c)
 
-    print("✅ HISTORICAL GAP HEALED. Strategy state fully restored.")
+    print("OK HISTORICAL GAP HEALED. Strategy state fully restored.")
     stale_feed_active = False
 
 async def _connect_and_listen():
@@ -339,7 +333,7 @@ async def _connect_and_listen():
 
     while _running:
         url = build_ws_url()
-        print(f"🚀 Connecting to Dhan: {url.split('?')[0]}...") # Log without tokens
+        print(f"WS Connecting to Dhan: {url.split('?')[0]}...") # Log without tokens
         
         connection_start_time = time.time()
         disconnect_duration = time.time() - last_ws_msg_time if 'last_ws_msg_time' in globals() else 0
@@ -347,8 +341,12 @@ async def _connect_and_listen():
         try:
             _reconnect_count += 1
             is_first_connect = (_reconnect_count == 1)
-            
-            async with websockets.connect(url, ping_interval=20, ping_timeout=10) as ws:
+
+            import ssl
+            import certifi
+            ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+            async with websockets.connect(url, ping_interval=20, ping_timeout=10, ssl=ssl_context) as ws:
                 _ws = ws
                 print(f"✅ Dhan WebSocket Connected")
                 
@@ -395,7 +393,6 @@ async def _connect_and_listen():
                             
                             if ltp is not None:
                                 sym = core_instruments.sid_to_symbol.get(sid, str(sid))
-                                print(f"⚡ TICK: {sym} ({sid}) -> {ltp}") 
                                 latest_ticks[sid] = {
                                     "symbol": sym,
                                     "ltp": ltp,
@@ -415,7 +412,8 @@ async def _connect_and_listen():
                                 # Forward tick to Paper Strategy Runner
                                 # Queue it for background processing to prevent asyncio event loop blocking!
                                 try:
-                                    tick_queue.put_nowait((sym.upper(), ltp, 0, None))
+                                    vol = volume_delta(sid, parsed.get("cum_volume"))
+                                    tick_queue.put_nowait((sym.upper(), ltp, vol, None))
                                 except asyncio.QueueFull:
                                     print(f"⚠️ CRITICAL: Tick Queue Full! Dropping tick for {sym.upper()}")
                     else:
@@ -500,7 +498,6 @@ async def fetch_initial_data():
     
     try:
         async with httpx.AsyncClient() as client:
-            print(f"📤 Dhan REST Payload: {payload}")
             resp = await client.post(url, json=payload, headers=headers, timeout=10.0)
             
             if resp.status_code != 200:
@@ -508,7 +505,6 @@ async def fetch_initial_data():
                 return
             
             data = resp.json()
-            print(f"📥 Dhan REST Response: {str(data)[:500]}...")
 
             if data.get("status") != "success":
                 print(f"⚠️ Dhan REST Failed: {data}")
@@ -516,7 +512,6 @@ async def fetch_initial_data():
             
             # Response: { "status": "success", "data": { "NSE_EQ": { "11536": { "last_price": 4520 } } } }
             quotes = data.get("data", {})
-            print(f"🔎 REST Response Keys: {list(quotes.keys())}")
             
             # Extract NSE_EQ data
             nse_eq_data = quotes.get("NSE_EQ", {})
@@ -529,7 +524,6 @@ async def fetch_initial_data():
                     
                     if price is not None:
                         sym = core_instruments.sid_to_symbol.get(sid, str(sid))
-                        print(f"🔍 SID {sid} -> Symbol: {sym}")
                         
                         latest_ticks[sid] = {
                             "symbol": sym,
@@ -581,6 +575,7 @@ async def start_ws_background_task():
     # Create task for initial fetch
     asyncio.create_task(fetch_initial_data())
 
+
 def subscribe_symbols(symbols: List[str]):
     """
     Add symbols to subscription list. 
@@ -618,9 +613,23 @@ async def subscribe_dynamic_symbols(symbols: List[str]):
 # ---------------------------
 # Local WebSocket Endpoint (Proxy)
 # ---------------------------
+def _authenticate_ws_token(token: Optional[str]) -> bool:
+    """Validate a JWT passed as ?token=... on a WebSocket connection."""
+    if not token:
+        return False
+    try:
+        decode_token(token)
+        return True
+    except HTTPException:
+        return False
+
+
 # Flutter app connects HERE. We stream data from `latest_ticks`.
 @router.websocket("/ws/market")
-async def websocket_endpoint(websocket: WebSocket):
+async def websocket_endpoint(websocket: WebSocket, token: Optional[str] = None):
+    if not _authenticate_ws_token(token):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     print("📲 Flutter Client Connected to Proxy")
     try:
@@ -635,33 +644,23 @@ async def websocket_endpoint(websocket: WebSocket):
                         "LTP": data["ltp"]
                     })
                 
-                # If list is huge, this effectively sends a massive JSON. 
-                # Better: only send changed ticks or subscribed ticks.
-                # For Sandbox/Demo of 5 symbols: it's fine.
+                # Sends every cached tick (~20-25 watchlist symbols); fine at this size.
                 if payload:
-                    # print(f"📤 Broadcasting {len(payload)} ticks to Flutter")
-                    # print(f"📦 Sample payload: {payload[0] if payload else 'empty'}")
                     await websocket.send_text(json.dumps(payload))
-            else:
-                 # print("⚠️ No ticks in latest_ticks to broadcast") # noisy
-                 pass
-            
             await asyncio.sleep(0.5)
-            
-            # keep alive check
-            # await websocket.receive_text() # This blocks separate send loop if not careful.
-            # Best pattern: separate reader/writer tasks, or just sleep/push (FastAPI handles ping/pong).
-            
     except Exception as e:
         print(f"❌ Flutter Client Disconnected: {e}")
 
 
 @router.websocket("/ws/ltp")
-async def ws_ltp(ws: WebSocket, symbol: str):
+async def ws_ltp(ws: WebSocket, symbol: str, token: Optional[str] = None):
     """
     Compatibility endpoint for single-symbol LTP polling.
     Consolidated from ws.py into market_ws.py.
     """
+    if not _authenticate_ws_token(token):
+        await ws.close(code=1008)
+        return
     await ws.accept()
 
     symbol = symbol.upper().strip()
@@ -672,7 +671,6 @@ async def ws_ltp(ws: WebSocket, symbol: str):
     try:
         while True:
             tick = get_tick(symbol)
-            # print("WS LOOP tick for", symbol, "=>", tick)  # DEBUG
 
             if tick:
                 # tick should be a dict: {"symbol": "...", "ltp": ..., "timestamp": ...}

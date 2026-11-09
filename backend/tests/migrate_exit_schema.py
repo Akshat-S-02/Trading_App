@@ -1,8 +1,13 @@
+import os
 import psycopg2
+from dotenv import load_dotenv
+
+load_dotenv()
+DATABASE_URL = os.environ["DATABASE_URL"]
 
 def migrate():
     try:
-        conn = psycopg2.connect('postgresql://postgres:Akshat%401311@localhost:5432/trading_sandbox')
+        conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
         
         print("🔨 Updating database schema...")
@@ -20,7 +25,7 @@ def migrate():
             print("✅ Added 'CLOSED' to orderstatus enum.")
         except psycopg2.errors.DuplicateObject:
             conn.rollback()
-            conn = psycopg2.connect('postgresql://postgres:Akshat%401311@localhost:5432/trading_sandbox')
+            conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
             print("ℹ️ 'CLOSED' already exists in enum.")
         

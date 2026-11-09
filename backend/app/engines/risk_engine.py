@@ -122,10 +122,10 @@ class RiskGate:
             logger.warning(f"RiskGate Blocked: Order throttle reached for {user.username}. ({recent_orders_count}/{user.max_orders_per_minute} in 60s)")
             return False
             
-        # 4. Throttle: Max Open Positions
+        # 4. Throttle: Max Open Positions (in-transit orders + FILLED positions not yet CLOSED)
         open_positions = db.query(models.Order).filter(
             models.Order.user_id == user.id,
-            models.Order.status.in_([models.OrderStatus.NEW, models.OrderStatus.ENQUEUED, models.OrderStatus.SENDING, models.OrderStatus.SUBMITTED, models.OrderStatus.BROKER_ACK, models.OrderStatus.PARTIALLY_FILLED])
+            models.Order.status.in_([models.OrderStatus.NEW, models.OrderStatus.ENQUEUED, models.OrderStatus.SENDING, models.OrderStatus.SUBMITTED, models.OrderStatus.BROKER_ACK, models.OrderStatus.PARTIALLY_FILLED, models.OrderStatus.FILLED])
         ).count()
         
         if open_positions >= user.max_open_positions:
@@ -149,19 +149,27 @@ class RiskGate:
         
         monthly_losing_trades = db.query(func.sum(models.Order.pnl)).filter(
             models.Order.user_id == user.id,
-            models.Order.status == models.OrderStatus.FILLED,
+            models.Order.status.in_([
+                models.OrderStatus.FILLED,
+                models.OrderStatus.CLOSED,
+            ]),
             models.Order.updated_at >= first_day_of_month,
             models.Order.pnl < 0
         ).scalar() or Decimal('0.0')
         
         monthly_winning_trades = db.query(func.sum(models.Order.pnl)).filter(
             models.Order.user_id == user.id,
-            models.Order.status == models.OrderStatus.FILLED,
+            models.Order.status.in_([
+                models.OrderStatus.FILLED,
+                models.OrderStatus.CLOSED,
+            ]),
             models.Order.updated_at >= first_day_of_month,
             models.Order.pnl > 0
         ).scalar() or Decimal('0.0')
         
-        current_monthly_loss = abs(Decimal(str(monthly_losing_trades)) - Decimal(str(monthly_winning_trades))) if (monthly_losing_trades + monthly_winning_trades) < 0 else Decimal('0.0')
+        # Net month P&L = losses (negative) + wins (positive); only a net loss counts
+        monthly_net_pnl = Decimal(str(monthly_losing_trades)) + Decimal(str(monthly_winning_trades))
+        current_monthly_loss = abs(monthly_net_pnl) if monthly_net_pnl < 0 else Decimal('0.0')
         max_monthly_loss_amount = Decimal(str(user.capital_current)) * (Decimal(str(user.max_monthly_dd)) / Decimal('100.0'))
         
         # 6.5 STRUCTURAL HARD KILL CHECKS

@@ -70,6 +70,9 @@ class TickAggregator:
         # {symbol: _CandleBuilder}
         self._builders: Dict[str, _CandleBuilder] = {}
 
+        # {symbol: list[dict]} completed candle history
+        self._histories: Dict[str, list[dict]] = {}
+
         # Current bucket start time (IST, minute-aligned)
         self._current_bucket: Optional[datetime] = None
 
@@ -120,6 +123,7 @@ class TickAggregator:
         if session_date is None or tick_time.date() != session_date.date():
             self._flush_all(self._current_bucket)
             self._builders.clear()
+            self._histories.clear()
             self._last_tick_times.clear()
             self._session_date = tick_time
             self._current_bucket = bucket_start
@@ -157,6 +161,23 @@ class TickAggregator:
     def tracked_symbols(self) -> list[str]:
         return list(self._builders.keys())
 
+    def get_history(self, symbol: str) -> list[dict]:
+        return self._histories.get(symbol, [])
+
+    def flush_session_end(self, now: Optional[datetime] = None) -> None:
+        """
+        Emit the session's last candle once the session has ended. Ticks after
+        15:30 are ignored, so without this the 15:25 candle would only be
+        flushed by the next morning's first tick.
+        """
+        now = (now or datetime.now(_IST)).astimezone(_IST)
+        if not self._builders or self._current_bucket is None:
+            return
+        if now.date() == self._current_bucket.date() and now.time() < SESSION_END:
+            return
+        self._flush_all(self._current_bucket)
+        self._builders.clear()
+
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
@@ -185,6 +206,12 @@ class TickAggregator:
                 "close":     builder.close,
                 "volume":    builder.volume,
             }
+            if symbol not in self._histories:
+                self._histories[symbol] = []
+            self._histories[symbol].append(candle)
+            if len(self._histories[symbol]) > 100:
+                self._histories[symbol].pop(0)
+
             try:
                 self._on_candle(symbol, candle)
             except Exception:

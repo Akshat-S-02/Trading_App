@@ -6,6 +6,7 @@ from decimal import Decimal
 
 # Add root backend dir to sys.path so 'app' imports work
 sys.path.append(os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from app.db import require_test_db; require_test_db()  # this script deletes data
 
 from app.db import SessionLocal, Base, engine
 from app.models import User, Strategy, UserStrategyAllocation, RiskCategory, Direction, OrderStatus

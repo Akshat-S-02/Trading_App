@@ -56,6 +56,8 @@ class HealthProvider with ChangeNotifier {
         },
       ).timeout(const Duration(seconds: 3));
 
+      AuthService.checkAuth(response);
+
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         _isBackendReachable = true;

@@ -8,6 +8,7 @@ from datetime import datetime, timezone, time
 
 # Add the parent directory so we can import 'app'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__))))
+from app.db import require_test_db; require_test_db()  # this script deletes data
 
 from app.db import SessionLocal, Base, engine as db_engine
 from app.models import User, RiskCategory, UserStrategyAllocation, Order

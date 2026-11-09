@@ -70,6 +70,35 @@ class ExecutionEngine:
             "missing_cmp": missing_cmp
         }
 
+    def _persist_signal(self, signal: Signal) -> int | None:
+        """
+        Get-or-create the DB Signal row for this signal (keyed by signal_hash).
+        Orders link to it via signal_id so the exit monitor can read SL/target.
+        """
+        existing = self.db.query(models.Signal).filter(models.Signal.signal_hash == signal.signal_hash).first()
+        if existing:
+            return existing.id
+
+        row = models.Signal(
+            strategy_id=signal.strategy_id,
+            symbol=signal.symbol,
+            direction=models.Direction.LONG if signal.direction == "LONG" else models.Direction.SHORT,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            target_price=signal.target_price,
+            signal_hash=signal.signal_hash,
+            timestamp=signal.timestamp,
+        )
+        try:
+            self.db.add(row)
+            self.db.commit()
+            return row.id
+        except sqlalchemy.exc.IntegrityError:
+            # Concurrent insert of the same signal — reuse the winner's row
+            self.db.rollback()
+            existing = self.db.query(models.Signal).filter(models.Signal.signal_hash == signal.signal_hash).first()
+            return existing.id if existing else None
+
     def process_signal(self, signal: Signal) -> list:
         """
         Takes a pure mathematical Signal and routes it to users via the RiskGate.
@@ -84,7 +113,19 @@ class ExecutionEngine:
             .all()
             
         executed_orders = []
-            
+        if not allocations:
+            logger.warning(f"No user allocations for strategy_id={signal.strategy_id}; signal {signal.signal_hash} not routed.")
+            return executed_orders
+
+        try:
+            signal_row_id = self._persist_signal(signal)
+        except Exception as e:
+            self.db.rollback()
+            logger.error(f"Failed to persist Signal row for {signal.signal_hash}: {e}")
+            signal_row_id = None
+        if signal_row_id is None:
+            logger.error(f"Signal {signal.signal_hash} has no DB row; orders will lack SL/target exits.")
+
         for alloc in allocations:
             user_id = alloc.user_id
             
@@ -158,8 +199,15 @@ class ExecutionEngine:
                 
                 # Prevent Pyramiding: Block entry if we already have a position in the same direction
                 if current_position != 0:
+                    # Block same-direction pyramiding
                     if (current_position > 0 and signal.direction == 'LONG') or (current_position < 0 and signal.direction == 'SHORT'):
-                        logger.warning(f"User {user.username} blocked: Open position limit reached for {signal.symbol}.")
+                        logger.warning(f"User {user.username} blocked: pyramiding prevention — already {current_position} shares on {signal.symbol}.")
+                        continue
+                    # Block opposite-direction entry while a position is open on the same symbol
+                    # Reason: having simultaneous LONG and SHORT on the same symbol creates undefined P&L
+                    # and doubles margin usage. The existing position must close first.
+                    if (current_position > 0 and signal.direction == 'SHORT') or (current_position < 0 and signal.direction == 'LONG'):
+                        logger.warning(f"User {user.username} blocked: opposite-direction entry prevented — {signal.direction} signal on {signal.symbol} while {current_position} shares open. Wait for position to close first.")
                         continue
                 
                 # 2.9 Prepare Portfolio Snapshot
@@ -191,7 +239,10 @@ class ExecutionEngine:
                 )
                 
                 if size <= 0:
-                    logger.warning(f"User {user.username} rejected: Zero position size.")
+                    logger.warning(
+                        f"RiskGate sized qty=0 for user {user.username} on {signal.symbol}"
+                        f" -- skipping order"
+                    )
                     continue
                     
                 # 5.5 Margin Cache Guardrail
@@ -222,12 +273,15 @@ class ExecutionEngine:
                     order.quantity = size
                     order.entry_price = signal.entry_price
                     order.status = models.OrderStatus.NEW
+                    order.strategy_name = signal.strategy_name
+                    order.signal_id = signal_row_id
                 else:
                     side = models.Direction.LONG if signal.direction == "LONG" else models.Direction.SHORT
                     order = models.Order(
                         user_id=user.id,
-                        signal_id=None,
+                        signal_id=signal_row_id,
                         signal_hash=signal.signal_hash,
+                        strategy_name=signal.strategy_name,
                         symbol=signal.symbol,
                         direction=side,
                         quantity=size,
@@ -361,15 +415,20 @@ class ExecutionEngine:
         if order.filled_quantity >= order.quantity:
             order.status = models.OrderStatus.FILLED
             
-            # notify PaperStrategyRunner to start monitoring this position
+        self.db.commit()
+
+        # Notify an in-process PaperStrategyRunner (fast path). When fills come
+        # from the standalone OutboxWorker process there is no runner here; the
+        # API's runner picks the fill up from the DB on its periodic resync.
+        if order.status == models.OrderStatus.FILLED:
             try:
-                from app.engines.paper_strategy_runner import get_runner
-                runner = get_runner()
-                runner.register_fill(order.id)
+                from app.engines.paper_strategy_runner import peek_runner
+                runner = peek_runner()
+                if runner is not None:
+                    runner.register_fill(order.id)
             except Exception:
                 logger.exception(f"Failed to notify PaperStrategyRunner of fill for order {order_id}")
-            
-        self.db.commit()
+
         logger.info(f"Order {order_id} filled {filled_qty} @ {fill_price}. Avg now {order.average_price:.2f}. Total {order.filled_quantity}/{order.quantity}")
 
     def close_paper_position(self, order_id: int, exit_price: float, reason: str):
@@ -386,15 +445,29 @@ class ExecutionEngine:
             logger.warning(f"close_paper_position: Order {order_id} is in status {order.status}, not FILLED. Ignoring exit.")
             return
 
-        exit_px = Decimal(str(exit_price))
+        from app.config import config
+        from app.broker.paper_broker import _apply_slippage
+        from research.utils.fee_calculator import FeeConfig, calculate_charges
+
+        is_long = order.direction == models.Direction.LONG
+        ltp_at_exit = Decimal(str(exit_price))
+        # Exit pays slippage too (entry already did, in PaperBroker): a LONG
+        # exit is a sell and fills below LTP, a SHORT exit is a buy and fills above.
+        exit_px = _apply_slippage(ltp_at_exit, "SELL" if is_long else "BUY")
         entry_px = Decimal(str(order.average_price or order.entry_price))
         qty = Decimal(str(order.filled_quantity))
 
-        # 1. Calculate Realized PnL
-        if order.direction == models.Direction.LONG:
-            pnl = (exit_px - entry_px) * qty
+        # 1. Calculate Realized PnL, net of the same charges the backtest uses
+        if is_long:
+            gross_pnl = (exit_px - entry_px) * qty
         else:
-            pnl = (entry_px - exit_px) * qty
+            gross_pnl = (entry_px - exit_px) * qty
+
+        fee_config = FeeConfig()
+        entry_charges = calculate_charges(fee_config, "buy" if is_long else "sell", int(qty), float(entry_px))
+        exit_charges = calculate_charges(fee_config, "sell" if is_long else "buy", int(qty), float(exit_px))
+        charges = Decimal(str(entry_charges["total"])) + Decimal(str(exit_charges["total"]))
+        pnl = gross_pnl - charges
 
         # 2. Update Order
         order.status = models.OrderStatus.CLOSED
@@ -406,6 +479,9 @@ class ExecutionEngine:
         # 3. Create Exit Fill Record
         import uuid
         fill_id = f"exit_{uuid.uuid4().hex[:10]}"
+        opened_at = order.created_at
+        if opened_at and opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=timezone.utc)
         db_fill = models.TradeFill(
             order_id=order.id,
             fill_id=fill_id,
@@ -415,19 +491,34 @@ class ExecutionEngine:
                 "exit_reason": reason,
                 "entry_price": float(entry_px),
                 "exit_price": float(exit_px),
-                "holding_time_sec": (order.close_requested_at - order.created_at).total_seconds(),
+                "ltp_at_exit": float(ltp_at_exit),
+                "exit_slippage_ticks": config.PAPER_SLIPPAGE_TICKS,
+                "gross_pnl": float(gross_pnl),
+                "charges": float(charges),
+                "entry_charges": entry_charges,
+                "exit_charges": exit_charges,
+                "net_pnl": float(pnl),
+                "holding_time_sec": (order.close_requested_at - opened_at).total_seconds() if opened_at else None,
                 "execution_mode": "paper"
             }
         )
         self.db.add(db_fill)
 
-        # 4. Update Portfolio Metrics
-        user = order.user
+        # 4. Update capital and Portfolio Metrics so sizing and drawdown
+        # limits react to realized results
+        user = self.db.query(models.User).filter(models.User.id == order.user_id).with_for_update().first()
+        user.capital_current = Decimal(str(user.capital_current)) + pnl
         if user.portfolio_metrics:
-            user.portfolio_metrics.realized_pnl += pnl
+            metrics = user.portfolio_metrics
+            metrics.realized_pnl = Decimal(str(metrics.realized_pnl or 0)) + pnl
+            if user.capital_current > Decimal(str(metrics.peak_equity or 0)):
+                metrics.peak_equity = user.capital_current
 
         self.db.commit()
-        logger.info(f"PAPER EXIT: {order.symbol} {order.direction} closed via {reason} @ {exit_px}. PnL: {pnl:.2f}")
+        logger.info(
+            f"PAPER EXIT: {order.symbol} {order.direction} closed via {reason} @ {exit_px} (LTP {ltp_at_exit}). "
+            f"Gross {gross_pnl:.2f} - charges {charges:.2f} = net {pnl:.2f}. Capital now {user.capital_current:.2f}"
+        )
         
         sync_dispatch_alert(
             "INFO", 

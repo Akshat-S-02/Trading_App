@@ -308,15 +308,19 @@ class BacktestEngine:
         exit_reason  = None
         exit_price   = None
 
+        # Long-only. A bar that OPENS beyond a level gapped through it: the fill
+        # is the open, not the level (a stop can't fill above where price opened).
+        open_ = bar["open"]
+
         # Stop loss hit (low touched stop)
         if low <= position["stop_loss"]:
             exit_reason = "stop_loss"
-            exit_price  = position["stop_loss"]
+            exit_price  = min(position["stop_loss"], open_)
 
         # Target hit (high touched target)
         elif high >= position["target"]:
             exit_reason = "target_hit"
-            exit_price  = position["target"]
+            exit_price  = max(position["target"], open_)
 
         # EOD squareoff
         elif is_past_squareoff(bar["timestamp"]):

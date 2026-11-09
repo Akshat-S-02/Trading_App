@@ -26,11 +26,13 @@ schedule recomputed automatically.
 import asyncio
 import base64
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone, timedelta
 
 import httpx
+from dotenv import dotenv_values
 
 from app.config import config
 
@@ -133,9 +135,9 @@ def initialize_renewal_schedule() -> None:
     y, mo, d, h, mi, _ = _ist_components(exp)
     exp_min    = h * 60 + mi
     in_market  = (MARKET_START_H*60+MARKET_START_M) <= exp_min <= (MARKET_END_H*60+MARKET_END_M)
-    reason     = "market-hours expiry → 8:15 AM IST" if in_market else "1h before expiry"
-    print(f"📅  Token expiry:  {exp_ist} IST\n"
-          f"⏰  Next renewal: {renew_ist} IST  ({reason})", flush=True)
+    reason     = "market-hours expiry -> 8:15 AM IST" if in_market else "1h before expiry"
+    print(f"DATE  Token expiry:  {exp_ist} IST\n"
+          f"TIME  Next renewal: {renew_ist} IST  ({reason})", flush=True)
 
 
 # ── .env persistence ──────────────────────────────────────────────────────────
@@ -207,13 +209,13 @@ async def _renew_via_pin_totp() -> str | None:
             or (data.get("data") or {}).get("accessToken")
         )
         if new_token:
-            print("🔑 PIN+TOTP login succeeded. New token obtained.", flush=True)
+            print("KEY PIN+TOTP login succeeded. New token obtained.", flush=True)
         else:
-            print(f"⚠️  PIN+TOTP: unexpected response: {str(data)[:300]}", file=sys.stderr)
+            print(f"WARN PIN+TOTP: unexpected response: {str(data)[:300]}", file=sys.stderr)
         return new_token
 
     except Exception as e:
-        print(f"⚠️  PIN+TOTP renewal failed: {e}", file=sys.stderr)
+        print(f"ERR PIN+TOTP renewal failed: {e}", file=sys.stderr)
         return None
 
 
@@ -307,20 +309,52 @@ async def _do_renewal() -> bool:
 
 # ── External Health Check API ─────────────────────────────────────────────────
 
+_ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
+_env_mtime: float | None = None
+_rejected_token: str | None = None      # token Dhan answered 401 for
+_wake: asyncio.Event | None = None      # set to cut the renewal loop's sleep short
+_loop: asyncio.AbstractEventLoop | None = None
+
+
+def current_access_token() -> str:
+    """
+    The freshest ACCESS_TOKEN. Renewal runs in the API process and writes .env;
+    the OutboxWorker is a separate process, so re-read .env whenever it changes
+    instead of trusting the token loaded at process start.
+    """
+    global _env_mtime
+    try:
+        mtime = os.path.getmtime(_ENV_PATH)
+        if mtime != _env_mtime:
+            _env_mtime = mtime
+            token = dotenv_values(_ENV_PATH).get("ACCESS_TOKEN")
+            if token:
+                config.ACCESS_TOKEN = token
+    except OSError:
+        pass
+    return config.ACCESS_TOKEN
+
+
 def handle_401_unauthorized():
     """
-    Called by HTTP clients when Dhan returns HTTP 401.
-    Flags the token as invalid so the ExecutionEngine pauses immediately,
-    and forces the background loop to renew ASAP.
+    Called by HTTP clients when Dhan returns HTTP 401 (from any thread).
+    Marks the current token as rejected so is_token_valid() turns False, and
+    wakes the renewal loop (API process only) to renew right away.
     """
-    global last_renewal_ok, _next_renewal_at
+    global last_renewal_ok, _next_renewal_at, _rejected_token
+    _rejected_token = config.ACCESS_TOKEN
     last_renewal_ok = False
-    _next_renewal_at = time.time() - 10.0 # Force immediate loop wake
+    _next_renewal_at = time.time()
+    if _loop is not None and _wake is not None:
+        _loop.call_soon_threadsafe(_wake.set)
     print("🚨 Token flagged as UNAUTHORIZED (401). Pausing execution.", flush=True)
 
+
 def is_token_valid() -> bool:
-    """Returns True if the system believes the token is currently active."""
-    return last_renewal_ok
+    """True if the current token has not expired and Dhan has not rejected it."""
+    token = current_access_token()
+    exp = _token_exp(token)
+    return bool(token) and exp is not None and exp > time.time() and token != _rejected_token
 
 
 # ── Background loop ───────────────────────────────────────────────────────────
@@ -335,13 +369,22 @@ async def token_renewal_loop() -> None:
               "in .env for full automation that works even when token expires)",
               file=sys.stderr, flush=True)
 
+    global _wake, _loop
+    _loop = asyncio.get_running_loop()
+    _wake = asyncio.Event()
+
     initialize_renewal_schedule()
 
     while True:
         wait_s   = _seconds_until_next_renewal()
         wake_ist = _fmt_epoch_ist(time.time() + wait_s)
         print(f"⏰  Sleeping {wait_s/3600:.1f} h → next renewal at {wake_ist} IST.", flush=True)
-        await asyncio.sleep(wait_s)
+        try:
+            await asyncio.wait_for(_wake.wait(), timeout=wait_s)
+            print("⏰  Woken early by a 401 — renewing now.", flush=True)
+        except asyncio.TimeoutError:
+            pass
+        _wake.clear()
 
         for attempt in range(1, 4):
             print(f"🔄  Token renewal attempt {attempt}/3 …", flush=True)

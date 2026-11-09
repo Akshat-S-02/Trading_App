@@ -1,20 +1,16 @@
-import 'package:shared_preferences/shared_preferences.dart';
-
+/// Fixed backend location: the Lightsail server's Tailscale IP. Port 8000 is
+/// not open on the public IP (13.200.209.203); the phone reaches the server
+/// over Tailscale, which also encrypts the traffic. Change it here if the
+/// server ever moves; users never type it.
 class AppConfig {
-  static String backendHost = "192.168.0.113"; // Default fallback
-  static const int backendPort = 8003;
+  static const String backendHost = '100.102.217.43';
+  static const int backendPort = 8000;
 
-  static Future<void> loadHost() async {
-    final prefs = await SharedPreferences.getInstance();
-    backendHost = prefs.getString('backend_host') ?? "192.168.0.113";
-  }
-
-  static Future<void> saveHost(String host) async {
-    final prefs = await SharedPreferences.getInstance();
-    backendHost = host;
-    await prefs.setString('backend_host', host);
-  }
+  /// The backend has a single account (APP_USERNAME in backend/.env).
+  static const String username = 'admin';
 }
 
-String get kHttpBase => "http://${AppConfig.backendHost}:${AppConfig.backendPort}";
-String get kWsBase   => "ws://${AppConfig.backendHost}:${AppConfig.backendPort}";
+// http/ws inside the Tailscale tunnel (WireGuard-encrypted). Public HTTPS is on
+// hold; only needed if the server is ever exposed outside Tailscale.
+const String kHttpBase = 'http://${AppConfig.backendHost}:${AppConfig.backendPort}';
+const String kWsBase = 'ws://${AppConfig.backendHost}:${AppConfig.backendPort}';

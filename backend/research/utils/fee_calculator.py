@@ -5,7 +5,7 @@ Configurable fee/charge computation for NSE equity intraday/delivery trades.
 FeeConfig is passed into the backtest engine — never hardcoded.
 
 Default assumptions (Dhan flat fee model):
-  brokerage_per_order: Rs 20 flat per executed order (buy and sell separately)
+  brokerage:           min(Rs 20, 0.03% of turnover) per executed order (buy and sell separately)
   stt_sell_pct:        0.025% of turnover on sell side (intraday)
   exchange_pct:        0.00345% NSE transaction charge (both sides)
   sebi_pct:            0.0001% SEBI regulatory fee (both sides)
@@ -32,10 +32,11 @@ class FeeConfig:
     Pass this into BacktestEngine and calculate_charges().
 
     For Dhan intraday equity (default):
-      - Rs 20 flat brokerage per order
+      - brokerage min(Rs 20, 0.03%) per order
       - STT 0.025% on sell side
     """
-    brokerage_per_order: float = 20.0    # flat Rs per executed order
+    brokerage_per_order: float = 20.0    # Rs cap per executed order
+    brokerage_pct:       float = 0.03    # % of turnover; brokerage = min(cap, pct)
     stt_sell_pct:        float = 0.025   # STT on sell side (% of turnover)
     stt_buy_pct:         float = 0.0     # STT on buy side (0 for intraday equity)
     exchange_pct:        float = 0.00345 # NSE transaction charge (both sides)
@@ -68,7 +69,9 @@ def calculate_charges(
     """
     turnover = qty * price
 
-    brokerage = fee_config.brokerage_per_order  # flat per order
+    # Dhan intraday: Rs 20 or 0.03% of turnover, whichever is LOWER. A flat
+    # Rs 20 made a 1-share Rs 2,500 trade cost ~Rs 47 round trip instead of ~Rs 3.
+    brokerage = min(fee_config.brokerage_per_order, turnover * fee_config.brokerage_pct / 100)
 
     if side == "buy":
         stt = turnover * (fee_config.stt_buy_pct / 100)

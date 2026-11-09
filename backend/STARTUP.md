@@ -87,9 +87,8 @@ Both routes now read from the same underlying tick data.
 `/ws/market` is the primary Flutter route.
 `/ws/ltp` is a secondary single-symbol endpoint.
 
-> **Note (Bucket B):** `ws.py` and `ws_routes.py` both define `/ws/ltp`. After the
-> asyncio fix lands, the route registered last in `main.py` wins. Clean this up in
-> the next sprint by deleting `ws_routes.py` entirely and keeping only `ws.py`.
+> **Note:** `/ws/ltp` is defined only in `app/websocket/market_ws.py`. The old
+> duplicates in `app/routes/ws.py` and `app/routes/ws_routes.py` have been removed.
 
 ---
 

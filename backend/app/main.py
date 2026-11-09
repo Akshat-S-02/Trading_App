@@ -1,105 +1,3 @@
-# from fastapi import FastAPI
-# from .db import Base, engine
-# from .routes import market, trade, admin
-# from app.routes import admin, trading, market_live
-# import uvicorn
-# import asyncio
-# from .ai_engine import simple_momentum_loop
-# from fastapi.middleware.cors import CORSMiddleware
-# from app.routes import market_ws
-# from dotenv import load_dotenv
-# load_dotenv()
-
-
-# app = FastAPI(title="AI Stock Trader Alpha")
-# # create tables
-# Base.metadata.create_all(bind=engine)
-
-
-# app.include_router(market_ws.router)
-# app.include_router(market_live.router)
-# app.include_router(market.router)
-# app.include_router(trade.router)
-# app.include_router(admin.router)
-# app.include_router(trading.router)
-# @app.on_event("startup")
-# async def startup_event():
-#     # create default user
-#     from .crud import create_default_user
-#     db = engine.connect()
-#     create_default_user.__self__ if False else None
-#     create_default_user(__import__('sqlalchemy').orm.session.Session(engine))  # placeholder
-
-#     # Start background AI loop
-#     asyncio.create_task(simple_momentum_loop(60))
-
-# if __name__ == "__main__":
-#     uvicorn.run("app.main:app", host="10.0.2.2", port=8000, reload=True)
-
-# import sys, os
-# sys.path.append(os.path.dirname(__file__))
-# from fastapi import FastAPI, WebSocket
-# import asyncio
-# from app.websocket.market_ws import feed, dhan_ws_task
-# from app.services.dhan_service import find_instrument
-
-# app = FastAPI()
-
-# @app.on_event("startup")
-# async def startup_event():
-#     asyncio.create_task(dhan_ws_task())
-
-# @app.websocket("/ws/market")
-# async def market_socket(websocket: WebSocket):
-#     await websocket.accept()
-#     feed.connected_clients.add(websocket)
-#     print("📲 Flutter client connected.")
-
-#     try:
-#         while True:
-#             data = await websocket.receive_text()
-#             if data.startswith("SUB:"):
-#                 symbol = data.split(":")[1].strip().upper()
-#                 inst = find_instrument(symbol)
-#                 if inst:
-#                     await feed.subscribe([f"{inst['exchange']}:{inst['symbol']}"])
-#     except Exception as e:
-#         print(f"⚠️ WebSocket closed: {e}")
-#     finally:
-#         feed.connected_clients.remove(websocket)
-#     print("❌ Flutter client disconnected.")
-
-    # Cleanup subscriptions if needed
-
-# import asyncio
-# from fastapi import FastAPI
-# from app.routes.market_live import router as market_router
-# from app.websocket.market_ws import start_ws_background_task
-# from app.routes.ticks import router as ticks_router
-# from app.core.instruments import load_instruments
-# from app.websocket.market_ws import subscribe_symbols
-
-
-# app = FastAPI(title="Dhan API Backend")
-
-
-
-# @app.on_event("startup")
-# async def startup_event():
-#     load_instruments()
-#     subscribe_symbols(["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK"])
-#     asyncio.create_task(start_ws_background_task())
-
-
-# @app.get("/")
-# def root():
-#     return {"status": "running", "message": "Backend online"}
-
-
-# app.include_router(market_router)
-# app.include_router(ticks_router)
-
-
 import sys
 if sys.platform == "win32":
     # Force utf-8 encoding on Windows console to prevent emoji crashes
@@ -111,12 +9,13 @@ from fastapi import FastAPI
 
 from app.routes.market_live import router as market_router
 from app.routes.ticks import router as ticks_router
-# from app.core.tick_store import get_cached_ltp
 from app.websocket.market_ws import start_ws_background_task, subscribe_symbols
 from app.core.instruments import load_instruments
 from app.routes.admin import router as admin_router
 from app.db import engine, Base
-from app.config import config  # needed for JWT_SECRET startup check
+from app.config import config
+from app.workers.nightly_learning_job import run_nightly_job
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # Create tables
 Base.metadata.create_all(bind=engine)
 
@@ -132,17 +31,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# @app.on_event("startup")
-# async def startup_event():
-#     # Load instrument CSV → builds sid_to_symbol map
-#     load_instruments()
-
-#     # Subscribe to desired symbols before websocket starts
-#     subscribe_symbols(["RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK"])
-
-#     # Start websocket loop
-#     asyncio.create_task(start_ws_background_task())
-
 @app.on_event("startup")
 async def startup_event():
     # ── Security guard ─────────────────────────────────────────────────────────
@@ -155,6 +43,17 @@ async def startup_event():
             "   Generate one with:  python -c \"import secrets; print(secrets.token_hex(32))\"\n"
             + "=" * 70 + "\n",
             file=sys.stderr,
+        )
+
+    # ── SEBI static-IP compliance guard ──────────────────────────────────────
+    # From April 2026, Dhan requires order-placing API calls to originate from
+    # an IP whitelisted on the account. Refuse to boot in live mode until that's
+    # confirmed — this is a regulatory/account-safety gate, not a warning.
+    if config.EXECUTION_MODE.lower() == "live" and not config.DHAN_STATIC_IP_CONFIRMED:
+        raise RuntimeError(
+            "EXECUTION_MODE=live but DHAN_STATIC_IP_CONFIRMED is not set. "
+            "Whitelist this host's outbound IP with Dhan (required from April 2026), "
+            "then set DHAN_STATIC_IP_CONFIRMED=true in .env to confirm."
         )
 
     # Create default user (Sandbox)
@@ -176,6 +75,8 @@ async def startup_event():
         if not success:
             print("🚨 FATAL: Could not acquire valid Dhan token at startup. Exec engine will fail.", flush=True)
     else:
+        import app.services.token_renewal as _tr
+        _tr.last_renewal_ok = True  # a valid token at boot is a healthy token
         print("✅ Token validated at startup.", flush=True)
 
     # 2. Load instrument CSV → builds sid_to_symbol map
@@ -197,12 +98,30 @@ async def startup_event():
         "BAJFINANCE", "ULTRACEMCO", "M&M", "TATASTEEL"
     ])
     
+    # Start Paper Strategy Runner (Position Monitor)
+    from app.engines.paper_strategy_runner import get_runner
+    runner = get_runner()
+    runner.start()
+
     asyncio.create_task(start_ws_background_task())
 
 
     # Start Dhan token auto-renewal (daily at 08:15 IST, 1h before market open)
     from app.services.token_renewal import token_renewal_loop
     asyncio.create_task(token_renewal_loop())
+
+    # Start APScheduler for Nightly Learning Job
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        run_nightly_job, 
+        'cron', 
+        day_of_week='mon-fri', 
+        hour=16, 
+        minute=0, 
+        timezone='Asia/Kolkata'
+    )
+    scheduler.start()
+    print("✅ APScheduler started. Nightly Learning Job scheduled at 16:00 IST (Mon-Fri).")
 
 
 
@@ -211,8 +130,14 @@ def root():
     return {"status": "running", "message": "Backend online"}
 
 
-app.include_router(market_router, prefix="/api/market")
-app.include_router(ticks_router)
+from fastapi import Depends
+from app.auth import get_current_user
+
+# Every router except login and the WebSocket proxy (which checks ?token=) needs a valid JWT.
+_auth = [Depends(get_current_user)]
+
+app.include_router(market_router, prefix="/api/market", dependencies=_auth)
+app.include_router(ticks_router, dependencies=_auth)
 app.include_router(admin_router)
 
 # Auth
@@ -228,4 +153,4 @@ app.include_router(trade.router)
 
 # Paper Trading Engine
 from app.routes.paper import router as paper_router
-app.include_router(paper_router)
+app.include_router(paper_router, dependencies=_auth)

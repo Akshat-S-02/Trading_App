@@ -51,23 +51,13 @@ def test_trade_route_order_status():
 check("2. trade.py references valid OrderStatus.NEW", test_trade_route_order_status)
 
 
-# ── Test 3: asyncio importable from ws_routes ──────────────────────────────────
-def test_ws_routes_asyncio():
-    import app.routes.ws_routes as ws_routes_module
-    import asyncio
-    # The module uses asyncio.sleep — verify the module loaded without NameError
-    assert hasattr(ws_routes_module, "router"), "ws_routes.router not found after import"
+# ── Test 3: /ws/ltp is served by market_ws (ws.py / ws_routes.py removed) ─────
+def test_ws_ltp_route():
+    from app.websocket import market_ws
+    paths = [r.path for r in market_ws.router.routes]
+    assert "/ws/ltp" in paths, f"/ws/ltp not registered on market_ws.router: {paths}"
 
-check("3. ws_routes.py imports without NameError (asyncio fix)", test_ws_routes_asyncio)
-
-
-# ── Test 4: execution_worker.py is inert (imports fine, run_worker exits 0) ────
-def test_execution_worker_inert():
-    import app.workers.execution_worker as ew
-    assert hasattr(ew, "run_worker"), "run_worker() stub is missing from execution_worker.py"
-    # Do NOT call run_worker() here — it calls sys.exit(0) by design
-
-check("4. execution_worker.py is archived & exposes harmless run_worker() stub", test_execution_worker_inert)
+check("3. /ws/ltp is registered on market_ws.router", test_ws_ltp_route)
 
 
 # ── Test 5: reconciliation_engine uses valid OrderStatus ──────────────────────

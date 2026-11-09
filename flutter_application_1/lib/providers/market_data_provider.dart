@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../services/websocket_service.dart';
+import '../services/auth_service.dart';
 import '../app_config.dart';
 
 /// Owns everything related to live market data:
@@ -14,7 +16,7 @@ class MarketDataProvider with ChangeNotifier {
   final Map<String, dynamic> _prices = {};
   Map<String, dynamic> get prices => _prices;
 
-  double? getPrice(String symbol) => _prices[symbol] as double?;
+  double? getPrice(String symbol) => (_prices[symbol] as num?)?.toDouble();
 
   // ── Watchlist ────────────────────────────────────────────────────────────────
   List<String> _watchlist = [];
@@ -35,18 +37,47 @@ class MarketDataProvider with ChangeNotifier {
   void initialize() {
     if (_initialized) return;
     _initialized = true;
+    _connectWebSocket();
+  }
 
+  Future<void> _connectWebSocket() async {
+    if (_disposed) return;
+    // Fresh token each attempt: after a re-login the old one is gone.
+    final token = await AuthService.getToken();
+    final query = token != null ? '?token=$token' : '';
+    _wsService?.dispose();
     _wsService = WebSocketService(
-      url: '$kWsBase/ws/market',
-      onMessage: _ingest,
-      onDone: () => debugPrint('MarketData WS closed'),
-      onError: (e) => debugPrint('❌ MarketData WS error: $e'),
+      url: '$kWsBase/ws/market$query',
+      onMessage: (msg) {
+        _reconnectDelay = _minReconnectDelay; // data is flowing again
+        _ingest(msg);
+      },
+      onDone: () => _scheduleReconnect('closed'),
+      onError: (e) => _scheduleReconnect('error: $e'),
     );
     _wsService!.connect();
   }
 
+  // The socket drops on server deploys, network changes and phone sleep.
+  // Without this the price map silently freezes until the app restarts.
+  static const _minReconnectDelay = Duration(seconds: 2);
+  static const _maxReconnectDelay = Duration(seconds: 30);
+  Duration _reconnectDelay = _minReconnectDelay;
+  Timer? _reconnectTimer;
+  bool _disposed = false;
+
+  void _scheduleReconnect(String why) {
+    if (_disposed || (_reconnectTimer?.isActive ?? false)) return;
+    debugPrint('MarketData WS $why; reconnecting in ${_reconnectDelay.inSeconds}s');
+    _reconnectTimer = Timer(_reconnectDelay, _connectWebSocket);
+    final next = _reconnectDelay * 2;
+    _reconnectDelay = next > _maxReconnectDelay ? _maxReconnectDelay : next;
+  }
+
   @override
   void dispose() {
+    _disposed = true;
+    _reconnectTimer?.cancel();
     _wsService?.dispose();
     super.dispose();
   }
@@ -84,9 +115,11 @@ class MarketDataProvider with ChangeNotifier {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/market/ltp/batch'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await AuthService.authHeaders(),
         body: jsonEncode({'symbols': _watchlist}),
       );
+
+      AuthService.checkAuth(response);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
@@ -140,15 +173,38 @@ class MarketDataProvider with ChangeNotifier {
     }
   }
 
+  /// Undo a removal: put [symbol] back at its old position.
+  void restoreToWatchlist(String symbol, int index) {
+    if (_watchlist.contains(symbol)) return;
+    _watchlist.insert(index.clamp(0, _watchlist.length), symbol);
+    _saveWatchlist();
+    notifyListeners();
+  }
+
+  /// [newIndex] is already adjusted for the removed item (onReorderItem).
+  void reorderWatchlist(int oldIndex, int newIndex) {
+    final item = _watchlist.removeAt(oldIndex);
+    _watchlist.insert(newIndex, item);
+    _saveWatchlist();
+    notifyListeners();
+  }
+
+  /// Make sure [symbol] has a price (and that the backend subscribes to it),
+  /// e.g. when trading a stock that isn't in the watchlist.
+  void ensurePrice(String symbol) {
+    if (getPrice(symbol) == null) _seedSinglePrice(symbol);
+  }
+
   // ── HTTP snapshot to seed price + tell backend to subscribe ─────────────────
 
   Future<void> _seedSinglePrice(String symbol) async {
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/market/ltp/batch'),
-        headers: {'Content-Type': 'application/json'},
+        headers: await AuthService.authHeaders(),
         body: jsonEncode({'symbols': [symbol]}),
       );
+      AuthService.checkAuth(response);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final results = data['results'] as Map<String, dynamic>?;

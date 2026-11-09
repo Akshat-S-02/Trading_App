@@ -1,107 +1,49 @@
-# app/core/tick_store.py
+"""
+app/core/tick_store.py
 
-from typing import Dict
+Latest prices, two ways:
+  - Redis  tick:<SYMBOL> -> {"symbol", "ltp", "timestamp"}: shared across processes
+    (the OutboxWorker / PaperBroker read it); timestamp = when we received it.
+  - latest_ticks {security_id: {"symbol", "ltp", "time"}}: in-process cache that
+    market_ws fills and the /ws/market proxy streams to the app.
+"""
 import json
 import time
+from typing import Dict
+
 from redis import Redis
 
-# Single Redis connection (thread-safe)
 redis = Redis(host="127.0.0.1", port=6379, decode_responses=True)
 
-REDIS_KEY_PREFIX = "tick:"  # tick:RELIANCE, tick:TCS, tick:HDFCBANK
+REDIS_KEY_PREFIX = "tick:"  # tick:RELIANCE, tick:TCS, ...
+MAX_TICK_AGE_S = 30  # older than this = feed down / symbol not trading: not a live price
 
-# Store: { security_id: {"symbol": str, "ltp": float, "time": int} }
 latest_ticks: Dict[int, Dict] = {}
 
-# Public function to update ticks
-def update_tick(security_id: int, symbol: str, ltp: float, timestamp: int):
-    latest_ticks[security_id] = {
-        "symbol": symbol,
-        "ltp": ltp,
-        "time": timestamp,
-    }
 
-# Public function to get LTP by symbol name
 def get_cached_ltp(symbol: str):
+    """In-process tick for a symbol (API process only), or None."""
     symbol = symbol.upper().strip()
-    for sec_id, data in latest_ticks.items():
+    for data in latest_ticks.values():
         if data["symbol"] == symbol:
             return data
-    return None  # not found
-
-# Public function to get tick by security id
-def get_tick_by_sid(security_id: int):
-    return latest_ticks.get(security_id)
-
-
-
-# def save_tick(symbol: str, ltp: float):
-#     """Store the latest tick for a symbol."""
-#     data = {
-#         "symbol": symbol,
-#         "ltp": ltp,
-#         "timestamp": time.time()
-#     }
-#     key = f"{REDIS_KEY_PREFIX}{symbol}"
-#     redis.set(key, json.dumps(data))
-
-# def save_tick(symbol: str, ltp: float):
-#     try:
-#         key = f"{REDIS_KEY_PREFIX}{symbol.upper()}"
-#         redis.set(key, json.dumps({
-#             "symbol": symbol,
-#             "ltp": ltp,
-#             "timestamp": time.time(),
-#         }))
-#         # print("REDIS ADDRESS:", redis.connection_pool.connection_kwargs)
-#         print("PING:", redis.ping())
-#         print("REAL REDIS INFO:", redis.info())
-
-#     except Exception as e:
-#         print("🔥 redis.set FAILED:", e)
-
-
-# near the top of file (if not present)
+    return None
 
 
 def save_tick(symbol: str, ltp: float):
     try:
-        key = f"{REDIS_KEY_PREFIX}{symbol.upper()}"
-        # DEBUG: show connection info & ping + keys BEFORE writing
-        # try:
-        #     print("DEBUG: redis-ping ->", redis.ping())
-        # except Exception as _e:
-        #     print("DEBUG: redis.ping FAILED:", _e)
-        # try:
-        #     print("DEBUG: redis connection pool settings:", getattr(redis, "connection_pool", None) and redis.connection_pool.connection_kwargs)
-        # except Exception:
-        #     pass
-        # try:
-        #     print("DEBUG: existing keys (sample):", redis.keys("*")[:50])
-        # except Exception as _e:
-        #     print("DEBUG: keys() failed:", _e)
-
-        redis.set(key, json.dumps({
+        redis.set(f"{REDIS_KEY_PREFIX}{symbol.upper()}", json.dumps({
             "symbol": symbol,
             "ltp": float(ltp),
             "timestamp": time.time(),
         }))
-
-        # DEBUG: read back the key we just set
-        # try:
-        #     print("DEBUG: read-back:", redis.get(key))
-        # except Exception as _e:
-        #     print("DEBUG: read-back failed:", _e)
-
     except Exception as e:
         print("⚠ redis.set FAILED:", e)
 
 
-
 def get_tick(symbol: str):
-    """Get latest tick for one symbol."""
-    key = f"{REDIS_KEY_PREFIX}{symbol.upper()}"
-    raw = redis.get(key)
+    """Latest Redis tick for one symbol, whatever its age (see get_live_ltp)."""
+    raw = redis.get(f"{REDIS_KEY_PREFIX}{symbol.upper()}")
     if not raw:
         return None
     try:
@@ -110,14 +52,19 @@ def get_tick(symbol: str):
         print("⚠ redis.get decode FAILED:", e, "raw:", raw)
         return None
 
-def get_all_ticks():
-    """Return all available ticks (fast)."""
-    keys = redis.keys(f"{REDIS_KEY_PREFIX}*")
-    out = []
 
-    for k in keys:
-        raw = redis.get(k)
-        if raw:
-            out.append(json.loads(raw))
+def tick_is_live(tick: dict | None, max_age_s: float = MAX_TICK_AGE_S) -> bool:
+    """True if the Redis tick has a price and was written within max_age_s."""
+    if not tick or not tick.get("ltp"):
+        return False
+    ts = tick.get("timestamp")
+    return ts is not None and time.time() - float(ts) <= max_age_s
 
-    return out
+
+def get_live_ltp(symbol: str, max_age_s: float = MAX_TICK_AGE_S):
+    """Latest price only if it is fresh; None if missing, stale, or Redis is down."""
+    try:
+        tick = get_tick(symbol)
+    except Exception:
+        return None
+    return float(tick["ltp"]) if tick_is_live(tick, max_age_s) else None

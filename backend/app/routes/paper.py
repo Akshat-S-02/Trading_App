@@ -98,7 +98,7 @@ def paper_status():
 
 
 @router.post("/start")
-def paper_start():
+async def paper_start():
     runner = get_runner()
     runner.start()
     return {"status": "started"}

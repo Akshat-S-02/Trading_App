@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Dict, Any
 
 from app.config import config
-from app.core.tick_store import get_cached_ltp
+from app.core.tick_store import get_cached_ltp, get_tick
 
 logger = logging.getLogger("PaperBroker")
 
@@ -68,8 +68,15 @@ def place_order(
         {"status": "success", "order_id": "PAPER_...", ...}
         {"status": "error", "error": "..."}
     """
-    # 1. Get latest price from tick store
-    tick = get_cached_ltp(symbol)
+    # 1. Get latest price from tick store. Redis first: the OutboxWorker runs
+    # in its own process, where the in-memory tick cache is always empty.
+    try:
+        tick = get_tick(symbol)
+    except Exception as e:
+        logger.warning(f"Redis tick lookup failed for {symbol}: {e}")
+        tick = None
+    if not tick or not tick.get("ltp"):
+        tick = get_cached_ltp(symbol)
     if tick and tick.get("ltp"):
         ltp = Decimal(str(tick["ltp"]))
     elif price > 0:

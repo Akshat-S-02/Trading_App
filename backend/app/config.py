@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     ACCESS_TOKEN: str
     DHAN_WS_URL: str = "wss://stream.dhan.co/market"
     DHAN_REST_BASE: str = "https://api.dhan.co"
-    DATABASE_URL: str = "postgresql://postgres:Akshat%401311@localhost:5432/trading_sandbox"
+    DATABASE_URL: str               # required — set in .env (no default: it would hold a password)
     # Auth — APP_PASSWORD and JWT_SECRET have NO defaults: they MUST be set in .env.
     # If either is missing, pydantic will raise a ValidationError on startup.
     APP_USERNAME: str = "admin"
@@ -43,6 +43,12 @@ class Settings(BaseSettings):
 
     # ── Watchdog ───────────────────────────────────────────────
     WATCHDOG_DEBUG_MODE: bool = False      # Bypass market hours check for tests
+
+    # ── SEBI Static-IP Compliance ──────────────────────────────
+    # From April 2026, order-placing API calls must originate from an IP
+    # whitelisted with the broker. Set to true only after that whitelisting
+    # is done for this host's IP. Checked at startup when EXECUTION_MODE=="live".
+    DHAN_STATIC_IP_CONFIRMED: bool = False
 
 
 config = Settings()

@@ -31,7 +31,7 @@ class AuthProvider with ChangeNotifier {
         throw Exception("Backend returned ${res.statusCode}");
       }
     } catch (e) {
-      _error = '❌ Cannot reach backend at ${AppConfig.backendHost}\nCheck that:\n• Backend is running\n• Phone and PC are on same Wi-Fi\n• Port ${AppConfig.backendPort} is correct';
+      _error = "Can't reach the trading server. Check that Tailscale is connected on this phone.";
       _isLoggedIn = false;
       _loading = false;
       notifyListeners();
@@ -46,7 +46,9 @@ class AuthProvider with ChangeNotifier {
       notifyListeners();
       return true;
     } catch (e) {
-      if (e.toString().contains('Invalid credentials')) {
+      if (e.toString().contains('Too many attempts')) {
+        _error = 'Too many wrong passwords. Wait 5 minutes and try again.';
+      } else if (e.toString().contains('Invalid credentials')) {
         _error = 'Wrong password. Try again.';
       } else {
         _error = 'Connection dropped during login.';

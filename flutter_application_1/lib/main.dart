@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
-import 'app_config.dart';
 import 'providers/auth_provider.dart';
 import 'providers/market_data_provider.dart';
 import 'providers/trading_provider.dart';
@@ -9,14 +8,22 @@ import 'providers/health_provider.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
+import 'ui/theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await AppConfig.loadHost();
   // Require password on every cold start for security
   await AuthService.logout();
+  AuthService.onSessionExpired = () {
+    _navigatorKey.currentState?.pushAndRemoveUntil(
+      MaterialPageRoute(builder: (_) => const LoginScreen(sessionExpired: true)),
+      (_) => false,
+    );
+  };
   runApp(const MyApp(isLoggedIn: false));
 }
+
+final _navigatorKey = GlobalKey<NavigatorState>();
 
 class MyApp extends StatelessWidget {
   final bool isLoggedIn;
@@ -40,9 +47,11 @@ class MyApp extends StatelessWidget {
         ),
       ],
       child: MaterialApp(
+        navigatorKey: _navigatorKey,
         debugShowCheckedModeBanner: false,
         title: 'AI Stock Trader (Sandbox)',
-        theme: ThemeData.dark(),
+        theme: buildAppTheme(),
+        themeMode: ThemeMode.dark,
         home: isLoggedIn ? const DashboardScreen() : const LoginScreen(),
       ),
     );

@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 from typing import Optional
-import os, re, base64, json, time
+import os, re, base64, json, time, asyncio
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from ..db import SessionLocal
 from .. import crud, models, schemas
 from ..auth import get_current_user
@@ -185,13 +186,64 @@ def update_dhan_token(body: TokenUpdateRequest, _: str = Depends(get_current_use
 
 # ── Canonical Portfolio/Trade Endpoints ─────────────────────────────────────
 
-@router.get("/api/portfolio")
-def get_portfolio(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
+class PortfolioResponse(BaseModel):
+    realized_pnl: float
+    unrealized_pnl: float
+    current_drawdown: float
+    peak_equity: float
+    win_rate: float
+    consecutive_loss_days: int
+    consecutive_dd_hits: int
+    available_margin: float
+    total_trades_today: int
+    winning_trades_today: int
+    losing_trades_today: int
+    gross_pnl_today: float
+
+@router.get("/api/portfolio", response_model=PortfolioResponse)
+def get_portfolio(db: Session = Depends(get_db), current_username: str = Depends(get_current_user)):
     """
-    Canonical portfolio endpoint. 
-    Currently returns empty list (Sandbox). Wire to PortfolioMetrics later.
+    Canonical portfolio endpoint returning metrics and today's summary.
     """
-    return []
+    user = db.query(models.User).filter(models.User.username == current_username).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+        
+    metrics = db.query(models.PortfolioMetrics).filter(models.PortfolioMetrics.user_id == user.id).first()
+
+    # "Today" is the IST trading day (UTC midnight is 05:30 IST).
+    ist = ZoneInfo("Asia/Kolkata")
+    start_of_day = datetime.now(ist).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    # Trades = positions opened today; wins / losses / win rate / P&L = those closed today.
+    opened_today = db.query(models.Order).filter(
+        models.Order.user_id == user.id,
+        models.Order.status.in_([models.OrderStatus.FILLED, models.OrderStatus.CLOSED]),
+        models.Order.created_at >= start_of_day,
+    ).count()
+    closed_today = db.query(models.Order).filter(
+        models.Order.user_id == user.id,
+        models.Order.status == models.OrderStatus.CLOSED,
+        models.Order.close_requested_at >= start_of_day,
+    ).all()
+    wins = sum(1 for o in closed_today if (o.pnl or 0) > 0)
+    losses = sum(1 for o in closed_today if (o.pnl or 0) < 0)
+
+    return PortfolioResponse(
+        # All-time realised net P&L: capital only changes when a position closes.
+        realized_pnl=float(user.capital_current or 0) - float(user.capital_initial or 0),
+        unrealized_pnl=0.0,  # the app computes open P&L from live prices
+        current_drawdown=float(metrics.current_drawdown) if metrics else 0.0,
+        peak_equity=float(metrics.peak_equity) if metrics else 0.0,
+        win_rate=round(100.0 * wins / len(closed_today), 1) if closed_today else 0.0,
+        consecutive_loss_days=metrics.consecutive_loss_days if metrics else 0,
+        consecutive_dd_hits=metrics.consecutive_dd_hits if metrics else 0,
+        available_margin=float(metrics.available_margin) if metrics else 0.0,
+        total_trades_today=opened_today,
+        winning_trades_today=wins,
+        losing_trades_today=losses,
+        gross_pnl_today=float(sum((o.pnl or 0) for o in closed_today)),
+    )
 
 @router.get("/api/trades")
 def get_trades(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
@@ -206,13 +258,18 @@ def get_trades(db: Session = Depends(get_db), _: str = Depends(get_current_user)
     
     # Format to match frontend expectations
     return [{
+        "id": ord.id,
         "order_id": ord.broker_order_id or f"INT-{ord.id}",
         "symbol": ord.symbol,
         "qty": ord.quantity,
         "side": "BUY" if ord.direction == models.Direction.LONG else "SELL",
-        "price": float(ord.entry_price),
+        "price": float(ord.average_price or ord.entry_price),
+        "exit_price": float(ord.exit_price) if ord.exit_price is not None else None,
+        "exit_reason": ord.exit_reason,
         "pnl": float(ord.pnl or 0.0),
         "status": ord.status.value,
+        "strategy_name": ord.strategy_name,
+        "source": "manual" if ord.strategy_name == "manual" else "auto",
         "created_at": ord.created_at
     } for ord in orders]
 
@@ -241,3 +298,43 @@ def get_system_health(_: str = Depends(get_current_user)):
             "sub_count": len(market_ws._subscribe_symbols)
         }
     }
+
+
+# ── Emergency Stop (Global Circuit Breaker) ────────────────────────────────────
+
+@router.post("/api/admin/emergency-stop")
+async def trip_emergency_stop(db: Session = Depends(get_db), user: str = Depends(get_current_user)):
+    """
+    Global kill-switch. Sets SystemSettings.emergency_stop: RiskGate refuses
+    new signals and the manual order route refuses new orders while it's set.
+    The market feed keeps running on purpose: the exit monitor needs live
+    prices to keep enforcing stop-loss / target / EOD on open positions.
+    """
+    settings = db.query(models.SystemSettings).first()
+    if not settings:
+        settings = models.SystemSettings(emergency_stop=True)
+        db.add(settings)
+    else:
+        settings.emergency_stop = True
+    db.commit()
+
+    from app.core.alerts import async_dispatch_alert
+    asyncio.create_task(async_dispatch_alert(
+        level="CRITICAL",
+        title="EMERGENCY STOP TRIPPED",
+        message=f"Global circuit breaker triggered by '{user}'. New orders blocked. Open positions stay under stop-loss / target / EOD monitoring."
+    ))
+
+    return {"status": "ok", "emergency_stop": True}
+
+
+@router.post("/api/admin/emergency-stop/clear")
+def clear_emergency_stop(db: Session = Depends(get_db), _: str = Depends(get_current_user)):
+    """
+    Clears the emergency_stop flag so RiskGate resumes accepting new signals.
+    """
+    settings = db.query(models.SystemSettings).first()
+    if settings:
+        settings.emergency_stop = False
+        db.commit()
+    return {"status": "ok", "emergency_stop": False}
