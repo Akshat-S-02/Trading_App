@@ -27,6 +27,8 @@ from research.strategies.volatility_regime import RegimeClassifier
 
 logger = logging.getLogger("DecisionEngine")
 
+ALLOW_SHORT_SIGNALS = False  # automated shorts off until backtested; manual shorts unaffected
+
 
 class DecisionEngine:
     def __init__(self, strategy_id: int):
@@ -110,6 +112,13 @@ class DecisionEngine:
             if sig:
                 signals.append(sig)
             
+        # Shorts (Supertrend, VWAP) were never backtested: the engine dropped them
+        # until 2026-11-09. Flip ALLOW_SHORT_SIGNALS once their backtest holds up.
+        if not ALLOW_SHORT_SIGNALS:
+            for s in [s for s in signals if s.direction == "SHORT"]:
+                logger.info(f"DecisionEngine: dropped SHORT {s.strategy_name} signal on {symbol}: shorts disabled")
+            signals = [s for s in signals if s.direction != "SHORT"]
+
         # Weight 0 = disabled by the nightly job. Without this a lone signal from a
         # "disabled" strategy still won, because weight only broke ties.
         disabled = [s for s in signals if self._strategy_weights.get(s.strategy_name, 1.0) <= 0]

@@ -142,6 +142,10 @@ class OutboxWorker:
                         f"| slippage={paper_meta.get('slippage_ticks')} ticks "
                         f"| latency={paper_meta.get('latency_ms', 0):.0f}ms"
                     )
+                    side = "BUY" if direction == "LONG" else "SELL"
+                    sync_dispatch_alert("INFO", f"Paper Entry: {symbol}",
+                                        f"{side} {qty} @ {float(fill_price_val):.2f} "
+                                        f"({order.strategy_name or 'auto'})")
                 else:
                     logger.info(f"[{self.worker_id}] SUCCESS. Broker ID: {broker_id}")
             else:

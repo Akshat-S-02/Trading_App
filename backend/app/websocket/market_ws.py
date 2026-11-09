@@ -208,22 +208,24 @@ async def ws_watchdog():
         await asyncio.sleep(1)
         
         now = time.time()
-        # 1. Connection-level check (heartbeat)
-        is_connection_stale = (now - last_ws_msg_time > HEARTBEAT_TIMEOUT)
-        
-        # 2. Binary stream check (silent gap)
-        # Only check binary silence during market hours (9:15 - 15:30)
         import zoneinfo
         from datetime import datetime
         _IST = zoneinfo.ZoneInfo("Asia/Kolkata")
         now_dt = datetime.now(_IST)
-        
-        is_market_open = (now_dt.hour == 9 and now_dt.minute >= 15) or (9 < now_dt.hour < 15) or (now_dt.hour == 15 and now_dt.minute <= 30)
-        
+
+        # Dhan is silent outside 09:15-15:30 Mon-Fri; checking then just reconnects
+        # every minute all night (and every 10 s all weekend). shortcut: exchange
+        # holidays still count as open; add an NSE holiday list if that gets noisy.
+        is_market_open = now_dt.weekday() < 5 and (
+            (now_dt.hour == 9 and now_dt.minute >= 15) or (9 < now_dt.hour < 15)
+            or (now_dt.hour == 15 and now_dt.minute <= 30))
+
         # Bypass for automated testing
         if getattr(config, "WATCHDOG_DEBUG_MODE", False):
             is_market_open = True
 
+        # 1. Connection-level check (heartbeat)  2. Binary stream check (silent gap)
+        is_connection_stale = is_market_open and (now - last_ws_msg_time > HEARTBEAT_TIMEOUT)
         is_binary_stale = is_market_open and (now - last_binary_tick_time > BINARY_TICK_TIMEOUT)
         
         if _ws and (is_connection_stale or is_binary_stale) and not stale_feed_active:

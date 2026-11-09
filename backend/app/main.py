@@ -154,3 +154,6 @@ app.include_router(trade.router)
 # Paper Trading Engine
 from app.routes.paper import router as paper_router
 app.include_router(paper_router, dependencies=_auth)
+
+from app.routes.notifications import router as notifications_router
+app.include_router(notifications_router, dependencies=_auth)

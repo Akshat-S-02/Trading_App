@@ -253,7 +253,8 @@ class BacktestEngine:
         Returns a position dict, or None if qty would be 0.
         """
         risk_per_trade = self.risk_config.capital * (self.risk_config.risk_pct / 100)
-        risk_per_share = signal.entry_price - signal.stop_loss
+        is_long = signal.direction == "LONG"
+        risk_per_share = (signal.entry_price - signal.stop_loss) if is_long else (signal.stop_loss - signal.entry_price)
 
         if risk_per_share <= 0:
             return None
@@ -262,9 +263,10 @@ class BacktestEngine:
 
         # Entry slippage: price moves against us on entry
         slippage_rs = calculate_slippage(self.slippage_config, qty)
-        actual_entry = signal.entry_price + slippage_rs / qty  # slightly worse price
+        # slightly worse price: a long buys higher, a short sells lower
+        actual_entry = signal.entry_price + (slippage_rs / qty if is_long else -slippage_rs / qty)
 
-        entry_charges = calculate_charges(self.fee_config, "buy", qty, actual_entry)
+        entry_charges = calculate_charges(self.fee_config, "buy" if is_long else "sell", qty, actual_entry)
 
         return {
             "symbol":               symbol,
@@ -308,19 +310,22 @@ class BacktestEngine:
         exit_reason  = None
         exit_price   = None
 
-        # Long-only. A bar that OPENS beyond a level gapped through it: the fill
-        # is the open, not the level (a stop can't fill above where price opened).
-        open_ = bar["open"]
+        # A bar that OPENS beyond a level gapped through it: the fill is the open,
+        # not the level (a long's stop can't fill above where price opened).
+        open_  = bar["open"]
+        stop   = position["stop_loss"]
+        target = position["target"]
+        is_long = position["direction"] == "LONG"
 
-        # Stop loss hit (low touched stop)
-        if low <= position["stop_loss"]:
+        # Stop loss hit (checked first: worst case when both are touched in one bar)
+        if (low <= stop) if is_long else (high >= stop):
             exit_reason = "stop_loss"
-            exit_price  = min(position["stop_loss"], open_)
+            exit_price  = min(stop, open_) if is_long else max(stop, open_)
 
-        # Target hit (high touched target)
-        elif high >= position["target"]:
+        # Target hit
+        elif target is not None and ((high >= target) if is_long else (low <= target)):
             exit_reason = "target_hit"
-            exit_price  = max(position["target"], open_)
+            exit_price  = max(target, open_) if is_long else min(target, open_)
 
         # EOD squareoff
         elif is_past_squareoff(bar["timestamp"]):
@@ -346,13 +351,14 @@ class BacktestEngine:
 
         qty = position["quantity"]
 
-        # Exit slippage: price moves against us on exit (slightly worse than expected)
+        is_long = position["direction"] == "LONG"
+        # Exit slippage: price moves against us (a long sells lower, a short buys back higher)
         slippage_rs = calculate_slippage(self.slippage_config, qty)
-        actual_exit = exit_price - (slippage_rs / qty)  # worse fill on exit for longs
+        actual_exit = exit_price - (slippage_rs / qty) if is_long else exit_price + (slippage_rs / qty)
 
-        exit_charges = calculate_charges(self.fee_config, "sell", qty, actual_exit)
+        exit_charges = calculate_charges(self.fee_config, "sell" if is_long else "buy", qty, actual_exit)
 
-        gross_pnl     = (actual_exit - position["entry_price"]) * qty
+        gross_pnl     = (actual_exit - position["entry_price"]) * qty * (1 if is_long else -1)
         total_charges = position["entry_charges"] + exit_charges["total"]
         net_pnl       = gross_pnl - total_charges
 
@@ -370,8 +376,9 @@ class BacktestEngine:
         best_high   = position.get("running_high", entry)
         worst_low   = position.get("running_low",  entry)
 
-        mfe_rs = round(max(0.0, best_high  - entry), 4)   # best unrealized gain per share
-        mae_rs = round(max(0.0, entry - worst_low), 4)     # worst unrealized loss per share
+        # best unrealized gain / worst unrealized loss per share
+        mfe_rs = round(max(0.0, (best_high - entry) if is_long else (entry - worst_low)), 4)
+        mae_rs = round(max(0.0, (entry - worst_low) if is_long else (best_high - entry)), 4)
 
         mfe_r  = round(mfe_rs / risk, 3) if risk > 0 else None
         mae_r  = round(mae_rs / risk, 3) if risk > 0 else None

@@ -3,6 +3,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/health_provider.dart';
 import '../providers/market_data_provider.dart';
+import '../providers/notification_provider.dart';
+import 'notifications_screen.dart';
 import '../providers/trading_provider.dart';
 import '../ui/components.dart';
 import '../ui/theme.dart';
@@ -35,6 +37,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<MarketDataProvider>().initialize();
       context.read<TradingProvider>().initialize();
+      context.read<NotificationProvider>().initialize();
       // Feed dot and stale-price banner need health data on every tab.
       context.read<HealthProvider>().startPolling();
     });
@@ -73,6 +76,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _modeChip(trading),
           const SizedBox(width: 4),
           _feedDot(),
+          Consumer<NotificationProvider>(
+            builder: (_, notes, __) => IconButton(
+              tooltip: 'Notifications',
+              onPressed: () => Navigator.of(context)
+                  .push(MaterialPageRoute(builder: (_) => const NotificationsScreen())),
+              icon: Badge(
+                isLabelVisible: notes.unread > 0,
+                label: Text('${notes.unread}'),
+                child: const Icon(Icons.notifications_outlined),
+              ),
+            ),
+          ),
           IconButton(
             tooltip: 'Risk limits',
             icon: const Icon(Icons.tune_rounded),

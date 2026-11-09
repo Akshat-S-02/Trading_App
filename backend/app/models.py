@@ -255,3 +255,15 @@ class PortfolioMetrics(Base):
     sharpe_estimate = Column(Numeric(15, 4), default=0.0)
 
     user = relationship("User", back_populates="portfolio_metrics")
+
+
+class Notification(Base):
+    """Every alert the system raises; the app's notification list reads this."""
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True, index=True)
+    level = Column(String, nullable=False)        # INFO / WARNING / CRITICAL / FATAL
+    title = Column(String, nullable=False)
+    message = Column(String, nullable=False)
+    read = Column(Boolean, default=False, nullable=False, index=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)

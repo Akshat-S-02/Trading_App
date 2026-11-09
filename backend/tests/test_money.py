@@ -143,8 +143,32 @@ def test_close_books_net_pnl_into_capital(db, direction, entry, exit_ltp, sign, 
 
 # ── Backtest fills ───────────────────────────────────────────────────────────
 
-def test_backtest_stop_gap_fills_at_open_not_stop():
-    fake = NS(_close_position=lambda pos, bar, reason, px: (reason, px))
-    pos = {"stop_loss": 95.0, "target": 110.0}
-    bar = {"open": 92.0, "high": 93.0, "low": 91.0, "close": 92.5, "timestamp": NOON}
-    assert BacktestEngine._check_exit(fake, pos, bar, []) == (True, ("stop_loss", 92.0))
+_fake_bt = NS(_close_position=lambda pos, bar, reason, px: (reason, px))
+
+
+@pytest.mark.parametrize("direction,stop,target,bar,expected", [
+    # long gaps down through its stop -> fills at the open, not the stop
+    ("LONG", 95.0, 110.0, (92.0, 93.0, 91.0), ("stop_loss", 92.0)),
+    ("LONG", 95.0, 110.0, (100.0, 111.0, 99.0), ("target_hit", 110.0)),
+    # short: stop is above, target below; a gap up through the stop fills at the open
+    ("SHORT", 105.0, 90.0, (108.0, 109.0, 107.0), ("stop_loss", 108.0)),
+    ("SHORT", 105.0, 90.0, (100.0, 101.0, 89.0), ("target_hit", 90.0)),
+])
+def test_backtest_exit_fills(direction, stop, target, bar, expected):
+    pos = {"direction": direction, "stop_loss": stop, "target": target}
+    o, h, l = bar
+    b = {"open": o, "high": h, "low": l, "close": o, "timestamp": NOON}
+    assert BacktestEngine._check_exit(_fake_bt, pos, b, []) == (True, expected)
+
+
+def test_backtest_short_is_sized_and_profits_when_price_falls():
+    eng = BacktestEngine.__new__(BacktestEngine)
+    eng.risk_config = NS(capital=50000, risk_pct=1.0)
+    eng.slippage_config = __import__("research.utils.fee_calculator", fromlist=["x"]).SlippageConfig(ticks=0)
+    eng.fee_config = FeeConfig()
+    sig = NS(direction="SHORT", entry_price=100.0, stop_loss=105.0, target=90.0, entry_reason="t", meta={})
+    pos = eng._open_position(sig, {"timestamp": NOON, "high": 100, "low": 100}, "TCS", "1")
+    assert pos is not None and pos["quantity"] == 100          # 500 risk / 5 per share
+    trade = eng._close_position(pos, {"timestamp": NOON, "close": 90.0}, "target_hit", 90.0)
+    assert trade["gross_pnl"] == pytest.approx(1000.0)         # (100 - 90) * 100
+    assert trade["net_pnl"] < trade["gross_pnl"]

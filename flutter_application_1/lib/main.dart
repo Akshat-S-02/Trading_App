@@ -5,6 +5,7 @@ import 'providers/auth_provider.dart';
 import 'providers/market_data_provider.dart';
 import 'providers/trading_provider.dart';
 import 'providers/health_provider.dart';
+import 'providers/notification_provider.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/login_screen.dart';
 import 'services/auth_service.dart';
@@ -45,9 +46,13 @@ class MyApp extends StatelessWidget {
         ChangeNotifierProvider(
           create: (_) => HealthProvider(),
         ),
+        ChangeNotifierProvider(
+          create: (_) => NotificationProvider(),
+        ),
       ],
       child: MaterialApp(
         navigatorKey: _navigatorKey,
+        scaffoldMessengerKey: appMessengerKey,
         debugShowCheckedModeBanner: false,
         title: 'AI Stock Trader (Sandbox)',
         theme: buildAppTheme(),
