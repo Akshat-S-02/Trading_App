@@ -55,6 +55,15 @@ class RiskGate:
             db.commit()
 
     @staticmethod
+    def daily_loss_limit_hit(db: Session, user: models.User) -> bool:
+        """Today's realized loss has reached max_daily_dd. Guards manual entries."""
+        RiskGate.check_intraday_reset(db, user)
+        m = user.portfolio_metrics
+        pnl = Decimal(str(m.realized_pnl or 0)) if m else Decimal('0')
+        limit = Decimal(str(user.capital_current)) * Decimal(str(user.max_daily_dd)) / Decimal('100')
+        return pnl < 0 and -pnl >= limit
+
+    @staticmethod
     def validate_risk(db: Session, user: models.User, system_settings: models.SystemSettings, signal: Signal, portfolio_snapshot: dict = None, current_time: datetime = None) -> bool:
         """
         Validates if the user is allowed to take a new trade.

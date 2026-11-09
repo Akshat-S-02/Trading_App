@@ -398,11 +398,13 @@ class _PositionCard extends StatelessWidget {
       ),
     );
     if (saved != true) return;
-    final res = await trading.updateBracket(
-      p['id'] as int,
-      stopLoss: double.tryParse(slCtrl.text),
-      target: double.tryParse(tgtCtrl.text),
-    );
+    final sl = double.tryParse(slCtrl.text), tgt = double.tryParse(tgtCtrl.text);
+    // A typo must not read as "empty", which would remove the stop.
+    if ((slCtrl.text.isNotEmpty && sl == null) || (tgtCtrl.text.isNotEmpty && tgt == null)) {
+      notify(messenger, 'Not saved: stop-loss or target is not a valid number.', ok: false);
+      return;
+    }
+    final res = await trading.updateBracket(p['id'] as int, stopLoss: sl, target: tgt);
     notify(messenger, res.message, ok: res.ok);
   }
 }

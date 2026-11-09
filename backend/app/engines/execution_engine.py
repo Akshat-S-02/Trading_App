@@ -135,12 +135,9 @@ class ExecutionEngine:
                 models.Order.signal_hash == signal.signal_hash
             ).first()
             
-            if existing:
-                if existing.status == models.OrderStatus.REJECTED and existing.rejection_count < 3:
-                    logger.info(f"Retrying rejected signal for user {user_id}. Attempt {existing.rejection_count + 1}")
-                else:
-                    logger.warning(f"Duplicate or Max-Retry Signal Rejected by DB Check for User {user_id}: {signal.signal_hash}")
-                    continue
+            if existing:  # one order per signal; a rejected order stays rejected
+                logger.warning(f"Duplicate signal ignored for user {user_id}: {signal.signal_hash}")
+                continue
 
             try:
                 # 0.2 PRE-FLIGHT BROKER HEALTH GUARD
@@ -174,9 +171,7 @@ class ExecutionEngine:
                     ])
                 ).first()
                 
-                # Check if it's our recycled order in transit
-                # It shouldn't be, since existing status is REJECTED
-                if transit_order and (not existing or transit_order.id != existing.id):
+                if transit_order:
                     # Just print generic warning so Windows cp1252 doesn't explode
                     logger.warning(f"User {user.username} blocked: Transit order exists for {signal.symbol}.")
                     continue
@@ -268,29 +263,21 @@ class ExecutionEngine:
                         continue
                     
                 # 6. Build and Store Order
-                if existing:
-                    order = existing
-                    order.quantity = size
-                    order.entry_price = signal.entry_price
-                    order.status = models.OrderStatus.NEW
-                    order.strategy_name = signal.strategy_name
-                    order.signal_id = signal_row_id
-                else:
-                    side = models.Direction.LONG if signal.direction == "LONG" else models.Direction.SHORT
-                    order = models.Order(
-                        user_id=user.id,
-                        signal_id=signal_row_id,
-                        signal_hash=signal.signal_hash,
-                        strategy_name=signal.strategy_name,
-                        symbol=signal.symbol,
-                        direction=side,
-                        quantity=size,
-                        entry_price=signal.entry_price,
-                        status=models.OrderStatus.NEW,
-                        rejection_count=0,
-                        signal_timestamp=signal.timestamp
-                    )
-                    self.db.add(order)
+                side = models.Direction.LONG if signal.direction == "LONG" else models.Direction.SHORT
+                order = models.Order(
+                    user_id=user.id,
+                    signal_id=signal_row_id,
+                    signal_hash=signal.signal_hash,
+                    strategy_name=signal.strategy_name,
+                    symbol=signal.symbol,
+                    direction=side,
+                    quantity=size,
+                    entry_price=signal.entry_price,
+                    status=models.OrderStatus.NEW,
+                    rejection_count=0,
+                    signal_timestamp=signal.timestamp
+                )
+                self.db.add(order)
                     
                 self.db.flush() # Get order ID without committing
                 
@@ -330,7 +317,7 @@ class ExecutionEngine:
     def handle_broker_rejection(self, order_id: int, reason: str):
         """
         Called when the Live API rejects an order.
-        Marks OrderStatus to REJECTED. Maintains signal_hash so retry bounds (3 limit) apply.
+        Marks OrderStatus to REJECTED. Keeps signal_hash so the same signal can't create a second order.
         """
         order = self.db.query(models.Order).filter(models.Order.id == order_id).with_for_update().first()
         if not order:

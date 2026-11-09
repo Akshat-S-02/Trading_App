@@ -172,3 +172,32 @@ def test_backtest_short_is_sized_and_profits_when_price_falls():
     trade = eng._close_position(pos, {"timestamp": NOON, "close": 90.0}, "target_hit", 90.0)
     assert trade["gross_pnl"] == pytest.approx(1000.0)         # (100 - 90) * 100
     assert trade["net_pnl"] < trade["gross_pnl"]
+
+
+# ── Daily loss limit also guards manual orders ───────────────────────────────
+
+@pytest.mark.parametrize("realized,blocked", [(0, False), (-999, False), (-1000, True), (500, False)])
+def test_daily_loss_limit_hit(db, realized, blocked):
+    user = models.User(username="t", capital_initial=50000, capital_current=50000, max_daily_dd=2,
+                       last_reset_date=datetime.now(timezone.utc).date())
+    db.add(user); db.flush()
+    db.add(models.PortfolioMetrics(user_id=user.id, peak_equity=50000, realized_pnl=realized)); db.commit()
+    db.refresh(user)
+    assert RiskGate.daily_loss_limit_hit(db, user) is blocked   # 2% of 50k = 1000
+
+
+# ── A rejected order is never re-sent by a repeated signal ───────────────────
+
+def test_repeated_signal_after_rejection_creates_nothing(db):
+    user = models.User(username="t", capital_initial=50000, capital_current=50000)
+    db.add(user); db.flush()
+    db.add(models.UserStrategyAllocation(user_id=user.id, strategy_id=1, allocation_percentage=100))
+    db.add(models.Order(user_id=user.id, symbol="TCS", direction=LONG, quantity=1, entry_price=100,
+                        signal_hash="h1", status=models.OrderStatus.REJECTED, rejection_count=1))
+    db.commit()
+    sig = Signal(strategy_id=1, symbol="TCS", direction="LONG", entry_price=Decimal("100"),
+                 stop_loss=Decimal("95"), timestamp=datetime.now(timezone.utc), strategy_name="orb_v4")
+    sig.signal_hash = "h1"
+    assert ExecutionEngine(db).process_signal(sig) == []
+    assert db.query(models.OutboxEvent).count() == 0
+    assert db.query(models.Order).one().status == models.OrderStatus.REJECTED

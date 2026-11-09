@@ -25,6 +25,7 @@ from ..config import config
 from ..db import SessionLocal
 from ..core.tick_store import MAX_TICK_AGE_S, get_cached_ltp, get_live_ltp, get_tick
 from ..engines.paper_strategy_runner import EOD_CUTOFF
+from ..engines.risk_engine import RiskGate
 
 router = APIRouter(prefix="/api/trade", tags=["manual-trade"])
 
@@ -189,6 +190,8 @@ def place_manual_order(
     settings = db.query(models.SystemSettings).first()
     if settings and settings.emergency_stop:
         raise HTTPException(423, "Emergency stop is active. Clear it before placing orders.")
+    if RiskGate.daily_loss_limit_hit(db, user):
+        raise HTTPException(423, "Daily loss limit reached. New orders are blocked until tomorrow.")
 
     _require_market_open()
     symbol = _bare_symbol(body.symbol)
