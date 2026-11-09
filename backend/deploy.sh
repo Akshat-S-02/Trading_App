@@ -13,7 +13,7 @@ rsync -avz \
   --exclude '.env' --exclude '*.db' \
   --exclude 'strategy_weights.json' --exclude 'strategy_params.json' --exclude 'learning_log_*.json' \
   --exclude 'portfolio.json' --exclude 'trades.json' --exclude 'stocks_cache.json' --exclude 'paper_session_telemetry.json' \
-  --exclude 'tests' --exclude 'app/simulation' --exclude 'test_*.py' --exclude 'verify_*.py' --exclude 'init_db.py' \
+  --exclude 'tests' --exclude 'app/simulation' --exclude 'test_*.py' --exclude 'verify_*.py' --exclude 'init_db.py' --exclude '.pytest_cache' \
   -e "ssh -i $KEY" ./ "$HOST:~/backend/"
 
 ssh -i "$KEY" "$HOST" 'cd ~/backend && .venv/bin/pip install -q -r requirements.txt \
