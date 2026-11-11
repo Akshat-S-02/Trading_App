@@ -199,11 +199,12 @@ def parse_binary_message(b: bytes):
 last_ws_msg_time = time.time()
 last_binary_tick_time = time.time()
 stale_feed_active = False
+_outage_alerted = False   # one alert per outage; cleared when a real tick arrives
 
 from app.core.alerts import async_dispatch_alert
 
 async def ws_watchdog():
-    global last_ws_msg_time, last_binary_tick_time, stale_feed_active, _ws
+    global last_ws_msg_time, last_binary_tick_time, stale_feed_active, _ws, _outage_alerted
     while _running:
         await asyncio.sleep(1)
         
@@ -232,13 +233,16 @@ async def ws_watchdog():
             if not stale_feed_active:
                 reason = "HEARTBEAT_TIMEOUT" if is_connection_stale else "BINARY_TICK_SILENCE"
                 limit = HEARTBEAT_TIMEOUT if is_connection_stale else BINARY_TICK_TIMEOUT
-                print(f"🚨 STALE_FEED BREAKER TRIPPED: {reason} (> {limit}s). Forcing reconnect.")
+                print(f"🚨 STALE_FEED BREAKER TRIPPED: {reason} (> {limit}s). Forcing reconnect.", flush=True)
                 stale_feed_active = True
-                asyncio.create_task(async_dispatch_alert(
-                    level="CRITICAL",
-                    title=f"STALE_FEED: {reason}",
-                    message=f"No data received from Dhan in {limit} seconds. Forcing reconnect and historical gap healing."
-                ))
+                if not _outage_alerted:
+                    _outage_alerted = True
+                    asyncio.create_task(async_dispatch_alert(
+                        level="CRITICAL",
+                        title=f"STALE_FEED: {reason}",
+                        message=f"No data received from Dhan in {limit} seconds. Reconnecting; "
+                                f"no further alert until data comes back."
+                    ))
             
             # Close the socket to force the reconnect loop
             try:
@@ -327,6 +331,7 @@ async def heal_historical_gap(disconnect_duration_seconds: float):
 
 async def _connect_and_listen():
     global _running, _ws, sid_to_symbol, last_ws_msg_time, stale_feed_active, _reconnect_count
+    global last_binary_tick_time, _outage_alerted
     backoff = BASE_RECONNECT_DELAY
     _running = True
     
@@ -350,7 +355,10 @@ async def _connect_and_listen():
 
             async with websockets.connect(url, ping_interval=20, ping_timeout=10, ssl=ssl_context) as ws:
                 _ws = ws
-                print(f"✅ Dhan WebSocket Connected")
+                # Fresh grace period for this connection; otherwise the watchdog sees the
+                # old timestamp and closes it again during gap healing, before we subscribe.
+                last_ws_msg_time = last_binary_tick_time = time.time()
+                print(f"✅ Dhan WebSocket Connected", flush=True)
                 
                 # Heal if: 
                 # 1. We were stale (watchdog tripped)
@@ -372,19 +380,24 @@ async def _connect_and_listen():
                 
                 if sids_to_sub:
                     await subscribe_sids(ws, list(sids_to_sub))
+                last_ws_msg_time = last_binary_tick_time = time.time()
 
                 # Listen Loop
                 async for msg in ws:
                     last_ws_msg_time = time.time()
-                    if backoff > BASE_RECONNECT_DELAY and (time.time() - connection_start_time > 5):
-                        backoff = BASE_RECONNECT_DELAY
-                        
+
                     if isinstance(msg, (bytes, bytearray)):
+                        # Code 50 = Dhan disconnect packet; bytes 8-9 carry the reason code
+                        if len(msg) >= 10 and msg[0] == 50:
+                            reason_code = struct.unpack("<h", bytes(msg[8:10]))[0]
+                            print(f"⛔ Dhan sent disconnect packet, reason code {reason_code}", flush=True)
+                            continue
                         parsed = parse_binary_message(bytes(msg))
                         if parsed and "ltp" in parsed:
-                            global last_binary_tick_time
                             last_binary_tick_time = time.time()
-                            
+                            backoff = BASE_RECONNECT_DELAY   # only real data proves the feed works
+                            _outage_alerted = False
+
                             # Skip processing if we're mid-healing to prevent time paradoxes
                             if stale_feed_active:
                                 continue
@@ -419,7 +432,12 @@ async def _connect_and_listen():
                                 except asyncio.QueueFull:
                                     print(f"⚠️ CRITICAL: Tick Queue Full! Dropping tick for {sym.upper()}")
                     else:
-                        pass  # Text message (handshake, errors)
+                        print(f"Dhan WS text message: {str(msg)[:300]}", flush=True)
+
+                # Dhan closed the socket cleanly: say why, and back off so we don't hit 429
+                print(f"🔌 Dhan closed the feed: code={ws.close_code} reason={ws.close_reason!r}", flush=True)
+            await asyncio.sleep(backoff)
+            backoff = min(MAX_RECONNECT_DELAY, backoff * 1.5)
 
         except InvalidStatusCode as e:
             print(f"⚠️ Dhan WS Error: server rejected WebSocket connection: HTTP {e.status_code}")
