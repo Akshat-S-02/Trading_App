@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import sys
 import time
 
@@ -7,7 +8,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import app.services.token_renewal as token_renewal
-from app.auth import get_current_user
+from app.auth import HideTokenInLogs, get_current_user
 from app.config import config
 from app.core.instruments import load_instruments
 from app.crud import create_default_user
@@ -28,6 +29,10 @@ if sys.platform == "win32":
     sys.stderr.reconfigure(encoding="utf-8")
 
 Base.metadata.create_all(bind=engine)
+
+# uvicorn.access logs HTTP paths, uvicorn.error the WebSocket "[accepted]" lines
+for _name in ("uvicorn.access", "uvicorn.error"):
+    logging.getLogger(_name).addFilter(HideTokenInLogs())
 
 app = FastAPI(title="Dhan API Backend")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True,

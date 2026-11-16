@@ -1,6 +1,8 @@
 """
 app/auth.py — JWT creation, verification, and FastAPI dependency.
 """
+import logging
+import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Optional
@@ -13,6 +15,18 @@ from .config import config
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24
+
+
+class HideTokenInLogs(logging.Filter):
+    """The app sends its login JWT as /ws/market?token=..., and uvicorn logs that
+    path; without this anyone who can read the logs could reuse the token."""
+    _token = re.compile(r"token=[^&\s\"]+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(self._token.sub("token=***", a) if isinstance(a, str) else a
+                                for a in record.args)
+        return True
 
 def verify_password(plain: str) -> bool:
     """Constant-time comparison to prevent timing attacks."""

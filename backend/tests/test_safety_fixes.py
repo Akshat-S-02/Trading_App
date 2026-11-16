@@ -184,3 +184,12 @@ def test_buying_power_is_capital_times_leverage_minus_open_orders(db):
                         entry_price=1000, status=models.OrderStatus.CLOSED))   # closed: not counted
     db.commit()
     assert buying_power_left(db, user) == Decimal("250000") - Decimal("200000")
+
+
+def test_login_token_never_reaches_the_logs():
+    import logging
+    from app.auth import HideTokenInLogs
+    rec = logging.LogRecord("uvicorn.error", logging.INFO, "", 0, '%s - "WebSocket %s" [accepted]',
+                            ("1.2.3.4:5", "/ws/market?token=eyJ.abc.def&x=1"), None)
+    HideTokenInLogs().filter(rec)
+    assert rec.getMessage() == '1.2.3.4:5 - "WebSocket /ws/market?token=***&x=1" [accepted]'
