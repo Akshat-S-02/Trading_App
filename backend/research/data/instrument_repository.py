@@ -103,15 +103,3 @@ def get_instrument(symbol: str) -> Optional[dict]:
         return None
     return {**inst, "exchange_segment": "NSE_EQ", "instrument": "EQUITY"}
 
-
-def get_instrument_by_id(security_id: str) -> Optional[dict]:
-    """Look up by security_id."""
-    inst = _BY_SECURITY_ID.get(security_id)
-    if not inst:
-        return None
-    return {**inst, "exchange_segment": "NSE_EQ", "instrument": "EQUITY"}
-
-
-def get_symbols() -> list[str]:
-    """Return just the symbol list."""
-    return [inst["symbol"] for inst in _NIFTY50]

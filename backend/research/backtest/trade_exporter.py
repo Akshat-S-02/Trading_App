@@ -26,7 +26,6 @@ import csv
 import logging
 import os
 import sys
-from datetime import timezone
 from pathlib import Path
 from typing import Optional
 

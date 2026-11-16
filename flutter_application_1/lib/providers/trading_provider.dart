@@ -51,8 +51,12 @@ class TradingProvider with ChangeNotifier {
   Map<String, dynamic> _paperStatus = {};
   Map<String, dynamic> get paperStatus => _paperStatus;
 
+  /// A risk guard (loss limit, losing streak, broker rejections) switched
+  /// auto-trading off. Only [resumeAutomation] turns it back on.
+  bool get autoHalted => _paperStatus['automation_enabled'] == false;
+
   bool get autoRunning =>
-      _paperStatus['runner_enabled'] == true && _paperStatus['runner_paused'] != true;
+      _paperStatus['runner_enabled'] == true && _paperStatus['runner_paused'] != true && !autoHalted;
 
   double get dailyLimit   => _dailyLimit;
   double get monthlyLimit => _monthlyLimit;
@@ -116,92 +120,77 @@ class TradingProvider with ChangeNotifier {
         .timeout(const Duration(seconds: 10));
   }
 
+  /// GET [path] -> decoded JSON; null on a network error or non-200.
+  Future<dynamic> _getJson(String path) async {
+    try {
+      final r = await http
+          .get(Uri.parse('$_baseUrl$path'), headers: await AuthService.authHeaders())
+          .timeout(const Duration(seconds: 10));
+      AuthService.checkAuth(r);
+      if (r.statusCode == 200) return jsonDecode(r.body);
+    } catch (e) {
+      debugPrint('GET $path failed: $e');
+    }
+    return null;
+  }
+
+  /// 200 -> ok with [okMessage]; otherwise the server's error message.
+  ActionResult _result(http.Response r, String okMessage) {
+    AuthService.checkAuth(r);
+    return r.statusCode == 200 ? ActionResult(true, okMessage) : ActionResult(false, _errorOf(r));
+  }
+
+  /// Runs a user action; a network error becomes a failed result instead of a throw.
+  Future<ActionResult> _guard(Future<ActionResult> Function() action) async {
+    try {
+      return await action();
+    } catch (e) {
+      return ActionResult(false, 'Could not reach the backend: $e');
+    }
+  }
+
   // ── Reads ────────────────────────────────────────────────────────────────────
 
   Future<void> fetchPortfolio() async {
-    try {
-      final headers = await AuthService.authHeaders();
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/portfolio'),
-        headers: headers,
-      );
-      AuthService.checkAuth(response);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        if (data is Map<String, dynamic>) {
-          _portfolioMetrics = data;
-        }
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('Error fetching portfolio: $e');
-    }
+    final data = await _getJson('/api/portfolio');
+    if (data is! Map<String, dynamic>) return;
+    _portfolioMetrics = data;
+    notifyListeners();
   }
 
   Future<void> fetchPositions() async {
-    try {
-      final headers = await AuthService.authHeaders();
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/trade/positions'),
-        headers: headers,
-      );
-      AuthService.checkAuth(response);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final prevOpen = _positions.length;
-        _positions = List<Map<String, dynamic>>.from(data['positions'] ?? []);
-        _pendingOrders = List<Map<String, dynamic>>.from(data['pending'] ?? []);
-        _executionMode = (data['execution_mode'] ?? 'paper').toString();
-        _emergencyStop = data['emergency_stop'] == true;
-        // A position closed server-side (SL / target / EOD): refresh P&L + history
-        if (_positions.length < prevOpen) {
-          fetchPortfolio();
-          fetchTrades();
-        }
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('Error fetching positions: $e');
+    final data = await _getJson('/api/trade/positions');
+    if (data is! Map<String, dynamic>) return;
+    final prevOpen = _positions.length;
+    _positions = List<Map<String, dynamic>>.from(data['positions'] ?? []);
+    _pendingOrders = List<Map<String, dynamic>>.from(data['pending'] ?? []);
+    _executionMode = (data['execution_mode'] ?? 'paper').toString();
+    _emergencyStop = data['emergency_stop'] == true;
+    // A position closed server-side (SL / target / EOD): refresh P&L + history
+    if (_positions.length < prevOpen) {
+      fetchPortfolio();
+      fetchTrades();
     }
+    notifyListeners();
   }
 
   Future<void> fetchTrades() async {
-    try {
-      final headers = await AuthService.authHeaders();
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/trades'),
-        headers: headers,
-      );
-      AuthService.checkAuth(response);
-      if (response.statusCode == 200) {
-        _trades = jsonDecode(response.body);
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('Error fetching trades: $e');
-    }
+    final data = await _getJson('/api/trades');
+    if (data is! List) return;
+    _trades = data;
+    notifyListeners();
   }
 
   Future<void> fetchUserLimits() async {
-    try {
-      final headers = await AuthService.authHeaders();
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/admin/limits'),
-        headers: headers,
-      );
-      AuthService.checkAuth(response);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        _dailyLimit   = (data['daily_limit']   ?? 0).toDouble();
-        _monthlyLimit = (data['monthly_limit'] ?? 0).toDouble();
-        _dailySpent   = (data['daily_spent']   ?? 0).toDouble();
-        _monthlySpent = (data['monthly_spent'] ?? 0).toDouble();
-        _balance      = (data['tokens']        ?? 0).toDouble();
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('Error fetching limits: $e');
-    }
+    final data = await _getJson('/api/admin/limits');
+    if (data is! Map) return;
+    double val(String k) => (data[k] ?? 0).toDouble();
+    _dailyLimit = val('daily_limit');
+    _monthlyLimit = val('monthly_limit');
+    _dailySpent = val('daily_spent');
+    _monthlySpent = val('monthly_spent');
+    _balance = val('tokens');
+    notifyListeners();
   }
 
   Future<bool> setLimits(double daily, double monthly) async {
@@ -223,20 +212,10 @@ class TradingProvider with ChangeNotifier {
   }
 
   Future<void> fetchPaperStatus() async {
-    try {
-      final headers = await AuthService.authHeaders();
-      final response = await http.get(
-        Uri.parse('$_baseUrl/api/paper/status'),
-        headers: headers,
-      );
-      AuthService.checkAuth(response);
-      if (response.statusCode == 200) {
-        _paperStatus = jsonDecode(response.body);
-        notifyListeners();
-      }
-    } catch (e) {
-      debugPrint('Error fetching paper status: $e');
-    }
+    final data = await _getJson('/api/paper/status');
+    if (data is! Map<String, dynamic>) return;
+    _paperStatus = data;
+    notifyListeners();
   }
 
   // ── Manual trading ───────────────────────────────────────────────────────────
@@ -247,82 +226,58 @@ class TradingProvider with ChangeNotifier {
     required String side,
     double? stopLoss,
     double? target,
-  }) async {
-    try {
-      final r = await _post('/api/trade/order', {
-        'symbol': symbol,
-        'qty': qty,
-        'side': side,
-        if (stopLoss != null) 'stop_loss': stopLoss,
-        if (target != null) 'target': target,
-      });
-      AuthService.checkAuth(r);
-      if (r.statusCode == 200) {
-        await Future.wait([fetchPositions(), fetchTrades()]);
-        return ActionResult(true, '$side $qty × ${symbol.split('.').first} placed');
-      }
-      return ActionResult(false, _errorOf(r));
-    } catch (e) {
-      return ActionResult(false, 'Could not reach the backend: $e');
-    }
-  }
+  }) => _guard(() async {
+    final r = await _post('/api/trade/order', {
+      'symbol': symbol,
+      'qty': qty,
+      'side': side,
+      if (stopLoss != null) 'stop_loss': stopLoss,
+      if (target != null) 'target': target,
+    });
+    if (r.statusCode == 200) await Future.wait([fetchPositions(), fetchTrades()]);
+    return _result(r, '$side $qty × ${symbol.split('.').first} placed');
+  });
 
   Future<ActionResult> closePosition(int orderId) async {
     _closing.add(orderId);
     notifyListeners();
     try {
-      final r = await _post('/api/trade/positions/$orderId/close');
-      AuthService.checkAuth(r);
-      if (r.statusCode == 200) {
-        final data = jsonDecode(r.body);
-        final pnl = (data['pnl'] as num?)?.toDouble() ?? 0;
+      return await _guard(() async {
+        final r = await _post('/api/trade/positions/$orderId/close');
+        if (r.statusCode != 200) return _result(r, '');
+        final pnl = (jsonDecode(r.body)['pnl'] as num?)?.toDouble() ?? 0;
         await refreshAll();
-        return ActionResult(true,
-            'Position closed. P&L ${pnl >= 0 ? '+' : '-'}₹${pnl.abs().toStringAsFixed(2)}');
-      }
-      return ActionResult(false, _errorOf(r));
-    } catch (e) {
-      return ActionResult(false, 'Could not reach the backend: $e');
+        return ActionResult(true, 'Position closed. P&L ${pnl >= 0 ? '+' : '-'}₹${pnl.abs().toStringAsFixed(2)}');
+      });
     } finally {
       _closing.remove(orderId);
       notifyListeners();
     }
   }
 
-  Future<ActionResult> updateBracket(int orderId, {double? stopLoss, double? target}) async {
-    try {
-      final headers = await AuthService.authHeaders();
-      final r = await http
-          .patch(Uri.parse('$_baseUrl/api/trade/positions/$orderId'),
-              headers: headers,
-              body: jsonEncode({'stop_loss': stopLoss, 'target': target}))
-          .timeout(const Duration(seconds: 10));
-      AuthService.checkAuth(r);
-      if (r.statusCode == 200) {
-        await fetchPositions();
-        return const ActionResult(true, 'Stop-loss / target updated');
-      }
-      return ActionResult(false, _errorOf(r));
-    } catch (e) {
-      return ActionResult(false, 'Could not reach the backend: $e');
-    }
-  }
+  Future<ActionResult> updateBracket(int orderId, {double? stopLoss, double? target}) => _guard(() async {
+    final r = await http
+        .patch(Uri.parse('$_baseUrl/api/trade/positions/$orderId'),
+            headers: await AuthService.authHeaders(),
+            body: jsonEncode({'stop_loss': stopLoss, 'target': target}))
+        .timeout(const Duration(seconds: 10));
+    if (r.statusCode == 200) await fetchPositions();
+    return _result(r, 'Stop-loss / target updated');
+  });
 
   // ── Automation & safety ──────────────────────────────────────────────────────
 
-  Future<ActionResult> setAutomation(bool run) async {
-    try {
-      final r = await _post(run ? '/api/paper/start' : '/api/paper/pause');
-      await fetchPaperStatus();
-      AuthService.checkAuth(r);
-      if (r.statusCode == 200) {
-        return ActionResult(true, run ? 'Auto-trading started' : 'Auto-trading paused');
-      }
-      return ActionResult(false, _errorOf(r));
-    } catch (e) {
-      return ActionResult(false, 'Could not reach the backend: $e');
-    }
-  }
+  Future<ActionResult> setAutomation(bool run) => _guard(() async {
+    final r = await _post(run ? '/api/paper/start' : '/api/paper/pause');
+    await fetchPaperStatus();
+    return _result(r, run ? 'Auto-trading started' : 'Auto-trading paused');
+  });
+
+  Future<ActionResult> resumeAutomation() => _guard(() async {
+    final r = await _post('/api/admin/automation/enable');
+    await fetchPaperStatus();
+    return _result(r, 'Auto-trading resumed');
+  });
 
   /// Trip the global kill switch. Optionally square off every open position
   /// first (while prices are still flowing).
@@ -339,32 +294,20 @@ class TradingProvider with ChangeNotifier {
         }
       }
     }
-    try {
+    return _guard(() async {
       final r = await _post('/api/admin/emergency-stop');
       await refreshAll();
-      AuthService.checkAuth(r);
-      if (r.statusCode != 200) return ActionResult(false, _errorOf(r));
+      if (r.statusCode != 200) return _result(r, '');
       var msg = 'Emergency stop active. New orders blocked.';
       if (closeAll) msg += ' Closed $closed position(s).';
       if (failures.isNotEmpty) msg += ' Failed: ${failures.join('; ')}';
       return ActionResult(failures.isEmpty, msg);
-    } catch (e) {
-      return ActionResult(false, 'Could not reach the backend: $e');
-    }
+    });
   }
 
-  Future<ActionResult> clearEmergencyStop() async {
-    try {
-      final r = await _post('/api/admin/emergency-stop/clear');
-      await fetchPositions();
-      AuthService.checkAuth(r);
-      if (r.statusCode == 200) {
-        return const ActionResult(true,
-            'Emergency stop cleared. New orders allowed again.');
-      }
-      return ActionResult(false, _errorOf(r));
-    } catch (e) {
-      return ActionResult(false, 'Could not reach the backend: $e');
-    }
-  }
+  Future<ActionResult> clearEmergencyStop() => _guard(() async {
+    final r = await _post('/api/admin/emergency-stop/clear');
+    await fetchPositions();
+    return _result(r, 'Emergency stop cleared. New orders allowed again.');
+  });
 }

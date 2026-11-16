@@ -1,11 +1,15 @@
 
 
+import os
+from typing import Literal
+
 from pydantic_settings import BaseSettings
-from pydantic import ConfigDict
+from pydantic import ConfigDict, field_validator, model_validator
 
 class Settings(BaseSettings):
     model_config = ConfigDict(
-        env_file=".env",
+        # backend/.env whatever the working directory (API, worker, scripts)
+        env_file=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"),
         env_file_encoding="utf-8",
         frozen=False,          # allow in-memory mutation for token rotation
     )
@@ -34,7 +38,8 @@ class Settings(BaseSettings):
     # "sandbox" = UI only, no execution
     # "paper"   = route to PaperBroker (realistic fills with slippage)
     # "live"    = route to Dhan REST API
-    EXECUTION_MODE: str = "paper"
+    # Anything else (a typo, "paper ", "LIVE") is refused at load, in every process.
+    EXECUTION_MODE: Literal["sandbox", "paper", "live"] = "paper"
 
     # ── Paper Broker Config ────────────────────────────────────
     PAPER_FILL_DELAY_MS_MIN: int = 100     # min simulated fill latency
@@ -47,8 +52,25 @@ class Settings(BaseSettings):
     # ── SEBI Static-IP Compliance ──────────────────────────────
     # From April 2026, order-placing API calls must originate from an IP
     # whitelisted with the broker. Set to true only after that whitelisting
-    # is done for this host's IP. Checked at startup when EXECUTION_MODE=="live".
+    # is done for this host's IP. Checked at load when EXECUTION_MODE=="live".
     DHAN_STATIC_IP_CONFIRMED: bool = False
+
+    @field_validator("EXECUTION_MODE", mode="before")
+    @classmethod
+    def _normalise_mode(cls, v):
+        return str(v).strip().lower()
+
+    @model_validator(mode="after")
+    def _live_needs_static_ip(self):
+        # A regulatory / account-safety gate, not a warning. Here rather than in
+        # the API startup so the OutboxWorker (which sends the orders) checks it too.
+        if self.EXECUTION_MODE == "live" and not self.DHAN_STATIC_IP_CONFIRMED:
+            raise ValueError(
+                "EXECUTION_MODE=live but DHAN_STATIC_IP_CONFIRMED is not set. "
+                "Whitelist this host's outbound IP with Dhan (required from April 2026), "
+                "then set DHAN_STATIC_IP_CONFIRMED=true in .env to confirm."
+            )
+        return self
 
 
 config = Settings()

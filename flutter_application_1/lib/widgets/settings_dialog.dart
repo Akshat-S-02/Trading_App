@@ -64,7 +64,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
     // Validate inline, next to the fields, instead of after a round trip.
     if (daily <= 0 || monthly <= 0) {
       HapticFeedback.heavyImpact();
-      setState(() => _error = 'Both limits must be more than ₹0.');
+      setState(() => _error = 'Both limits must be more than 0%.');
+      return;
+    }
+    if (monthly > 100) {
+      HapticFeedback.heavyImpact();
+      setState(() => _error = 'A limit can’t be more than 100% of your capital.');
       return;
     }
     if (daily > monthly) {
@@ -107,12 +112,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
             ],
           ),
           const SizedBox(height: 4),
-          const Text('The most new trades can spend. Orders past a limit are blocked.',
+          const Text('The most you can lose, as a % of your capital. Once a day’s or month’s '
+              'loss reaches it, new trades are blocked.',
               style: AppText.footnote),
           const SizedBox(height: 20),
-          _field(_dailyCtrl, 'Daily limit'),
+          _field(_dailyCtrl, 'Daily loss limit'),
           const SizedBox(height: 12),
-          _field(_monthlyCtrl, 'Monthly limit'),
+          _field(_monthlyCtrl, 'Monthly loss limit'),
           AnimatedSize(
             duration: motionDuration(context, 220),
             curve: motionCurve,
@@ -147,6 +153,6 @@ class _SettingsDialogState extends State<SettingsDialog> {
         onChanged: (_) {
           if (_error != null) setState(() => _error = null);
         },
-        decoration: InputDecoration(labelText: label, prefixText: '₹ '),
+        decoration: InputDecoration(labelText: label, suffixText: '% of capital'),
       );
 }

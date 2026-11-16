@@ -39,7 +39,6 @@ class BaseStrategy(ABC):
     Implement:
       - on_bar()      : called for every bar; return Signal or None
       - on_day_start(): called once at start of each trading day (optional)
-      - on_day_end()  : called once at end of each trading day (optional)
     """
 
     @abstractmethod
@@ -67,10 +66,6 @@ class BaseStrategy(ABC):
 
     def on_day_start(self, date: datetime, symbol: str) -> None:
         """Called at the start of each trading day. Override to reset daily state."""
-        pass
-
-    def on_day_end(self, date: datetime, symbol: str, position: Optional[dict]) -> None:
-        """Called at end of each trading day (before EOD squareoff). Override if needed."""
         pass
 
     def get_name(self) -> str:

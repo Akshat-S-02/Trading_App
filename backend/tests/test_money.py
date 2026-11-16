@@ -59,15 +59,15 @@ def _signal(direction, entry, sl):
 
 def test_long_size_risks_category_pct_of_capital():
     # LOW = 0.75% of 50,000 = 375 risk; stop distance 5 -> 75 shares
-    assert RiskGate.calculate_position_size(_user(), _signal("LONG", "100", "95"), lot_size=1) == 75
+    assert RiskGate.calculate_position_size(_user(), _signal("LONG", "100", "95")) == 75
 
 
 def test_short_size_uses_stop_above_entry():
-    assert RiskGate.calculate_position_size(_user(), _signal("SHORT", "100", "105"), lot_size=1) == 75
+    assert RiskGate.calculate_position_size(_user(), _signal("SHORT", "100", "105")) == 75
 
 
 def test_stop_on_wrong_side_sizes_zero():
-    assert RiskGate.calculate_position_size(_user(), _signal("LONG", "100", "101"), lot_size=1) == 0
+    assert RiskGate.calculate_position_size(_user(), _signal("LONG", "100", "101")) == 0
 
 
 # ── Exit rules ───────────────────────────────────────────────────────────────

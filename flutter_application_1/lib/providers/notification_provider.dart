@@ -10,8 +10,7 @@ import '../ui/theme.dart';
 final appMessengerKey = GlobalKey<ScaffoldMessengerState>();
 
 /// Server alerts (fills, exits, halts, feed problems) for the bell + list.
-/// While the app is open, new ones also show as a pop-up banner. With the app
-/// closed, the server pushes the same alerts through Telegram.
+/// While the app is open, new ones also show as a pop-up banner.
 class NotificationProvider with ChangeNotifier {
   List<Map<String, dynamic>> _items = [];
   List<Map<String, dynamic>> get items => _items;

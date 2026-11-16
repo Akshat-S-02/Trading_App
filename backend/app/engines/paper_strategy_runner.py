@@ -23,7 +23,7 @@ from app.engines.decision_engine import DecisionEngine
 from app.engines.execution_engine import ExecutionEngine
 from app.db import SessionLocal
 from app import models
-from sqlalchemy import func
+from sqlalchemy.orm import joinedload
 import asyncio
 import time
 from zoneinfo import ZoneInfo
@@ -60,7 +60,7 @@ class PaperStrategyRunner:
     Exposes:
       - feed_tick()     : called by market_ws on every parsed tick
       - get_status()    : returns runner state for the /api/paper/status endpoint
-      - start() / pause() / resume()
+      - start() / pause() / resume()   (no stop: the exit monitor must keep running)
     """
 
     def __init__(self, strategy_id: int = 1):
@@ -130,10 +130,7 @@ class PaperStrategyRunner:
         history.append(candle)
         if len(history) > 100:  # same cap as DecisionEngine.evaluate
             history.pop(0)
-        self._decision_engine._orb_adapter.on_candle(symbol, candle, allow_signal=False)
-        self._decision_engine._ema_adapter.on_candle(symbol, candle, allow_signal=False)
-        self._decision_engine._vwap_adapter.on_candle(symbol, candle, allow_signal=False)
-        self._decision_engine._supertrend_adapter.on_candle(symbol, candle, allow_signal=False)
+        self._decision_engine.feed_state_only(symbol, candle)
 
     # ------------------------------------------------------------------
     # Public: Control
@@ -156,10 +153,6 @@ class PaperStrategyRunner:
     def resume(self) -> None:
         self._paused = False
         logger.info("PaperStrategyRunner: RESUMED")
-
-    def stop(self) -> None:
-        self._enabled = False
-        logger.info("PaperStrategyRunner: STOPPED")
 
     # ------------------------------------------------------------------
     # Public: Status (for /api/paper/status)
@@ -202,7 +195,6 @@ class PaperStrategyRunner:
         """
         db = SessionLocal()
         try:
-            from sqlalchemy.orm import joinedload
             orders = db.query(models.Order).options(
                 joinedload(models.Order.signal)
             ).filter(
@@ -240,7 +232,6 @@ class PaperStrategyRunner:
         """Add a newly filled order to the active monitor."""
         db = SessionLocal()
         try:
-            from sqlalchemy.orm import joinedload
             order = db.query(models.Order).options(
                 joinedload(models.Order.signal)
             ).filter(models.Order.id == order_id).first()
@@ -315,7 +306,6 @@ class PaperStrategyRunner:
                 if strategy:
                     order_dt = order.created_at
                     if order_dt and order_dt.tzinfo is None:
-                        from datetime import timezone
                         order_dt = order_dt.replace(tzinfo=timezone.utc)
                     
                     history = self._aggregator.get_history(order.symbol)
@@ -346,20 +336,10 @@ class PaperStrategyRunner:
         # A. Stop Loss
         if order.signal and order.signal.stop_loss:
             sl = float(order.signal.stop_loss)
-            
-            if trailing_sl is not None:
-                if order.direction == models.Direction.LONG and trailing_sl > sl:
-                    if sl != trailing_sl:
-                        logger.debug(f"[{order.symbol}] Trailing SL active: original={sl} trailing={trailing_sl}")
-                    sl = trailing_sl
-                elif order.direction == models.Direction.SHORT and trailing_sl < sl:
-                    if sl != trailing_sl:
-                        logger.debug(f"[{order.symbol}] Trailing SL active: original={sl} trailing={trailing_sl}")
-                    sl = trailing_sl
-
-            if order.direction == models.Direction.LONG and ltp <= sl:
-                return "SL"
-            if order.direction == models.Direction.SHORT and ltp >= sl:
+            is_long = order.direction == models.Direction.LONG
+            if trailing_sl is not None:   # a trailing stop only ever tightens
+                sl = max(sl, trailing_sl) if is_long else min(sl, trailing_sl)
+            if (ltp <= sl) if is_long else (ltp >= sl):
                 return "SL"
 
         # B. Profit Target

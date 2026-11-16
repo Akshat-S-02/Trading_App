@@ -32,18 +32,17 @@ import logging
 import sys
 import os
 from collections import defaultdict
-from datetime import datetime, date, timedelta, timezone, time as dtime
+from datetime import datetime, timedelta, timezone, time as dtime
 from pathlib import Path
 from typing import Optional
 
-import pandas as pd
 import zoneinfo
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from research.db import init_db
 from research.data.candle_repository import get_candles
-from research.data.instrument_repository import get_instrument, get_nifty50_instruments
+from research.data.instrument_repository import get_instrument
 from research.utils.market_calendar import is_trading_day
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

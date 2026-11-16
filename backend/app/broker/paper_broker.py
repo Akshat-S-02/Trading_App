@@ -19,7 +19,7 @@ from decimal import Decimal
 from typing import Dict, Any
 
 from app.config import config
-from app.core.tick_store import get_cached_ltp, get_tick
+from app.core.tick_store import latest_ltp
 
 logger = logging.getLogger("PaperBroker")
 
@@ -27,14 +27,8 @@ TICK_SIZE = Decimal("0.05")
 
 
 def _simulate_latency() -> float:
-    """
-    Sleep for a random duration between configured min/max ms.
-    Returns the actual delay in milliseconds (for metrics).
-    """
-    delay_ms = random.randint(
-        config.PAPER_FILL_DELAY_MS_MIN,
-        config.PAPER_FILL_DELAY_MS_MAX,
-    )
+    """Sleep a random configured delay; returns it in ms (for metrics)."""
+    delay_ms = random.randint(config.PAPER_FILL_DELAY_MS_MIN, config.PAPER_FILL_DELAY_MS_MAX)
     time.sleep(delay_ms / 1000.0)
     return float(delay_ms)
 
@@ -46,10 +40,7 @@ def _apply_slippage(ltp: Decimal, direction: str) -> Decimal:
     SELL fills BELOW ltp  (unfavourable)
     """
     slippage = TICK_SIZE * config.PAPER_SLIPPAGE_TICKS
-    if direction.upper() in ("BUY", "LONG"):
-        return ltp + slippage
-    else:
-        return ltp - slippage
+    return ltp + slippage if direction.upper() in ("BUY", "LONG") else ltp - slippage
 
 
 def place_order(
@@ -68,19 +59,12 @@ def place_order(
         {"status": "success", "order_id": "PAPER_...", ...}
         {"status": "error", "error": "..."}
     """
-    # 1. Get latest price from tick store. Redis first: the OutboxWorker runs
-    # in its own process, where the in-memory tick cache is always empty.
-    try:
-        tick = get_tick(symbol)
-    except Exception as e:
-        logger.warning(f"Redis tick lookup failed for {symbol}: {e}")
-        tick = None
-    if not tick or not tick.get("ltp"):
-        tick = get_cached_ltp(symbol)
-    if tick and tick.get("ltp"):
-        ltp = Decimal(str(tick["ltp"]))
+    # 1. Latest price (Redis: the OutboxWorker's own in-memory cache is always
+    # empty), else the signal price in the outbox payload
+    last = latest_ltp(symbol)
+    if last:
+        ltp = Decimal(str(last))
     elif price > 0:
-        # Fallback to the signal price in the outbox payload
         ltp = Decimal(str(price))
     else:
         return {

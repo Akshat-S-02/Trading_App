@@ -10,7 +10,6 @@ import json
 import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from sqlalchemy.orm import Session
 from sqlalchemy import select
 
 from app.db import SessionLocal
@@ -30,11 +29,7 @@ def run_nightly_job():
     """
     logger.info("Starting Nightly Learning Job...")
     
-    runner = get_runner()
-    decision_engine = getattr(runner, "_decision_engine", None)
-    if not decision_engine:
-        logger.error("DecisionEngine not found on PaperStrategyRunner. Cannot run learning job.")
-        return
+    decision_engine = get_runner()._decision_engine
 
     today_str = datetime.now(_IST).strftime("%Y%m%d")
     log_file = os.path.join(os.path.dirname(__file__), f"../../learning_log_{today_str}.json")
@@ -46,7 +41,7 @@ def run_nightly_job():
     }
 
     with SessionLocal() as db:
-        for strategy_name in ["orb_v4", "ema_momentum", "vwap_reversion", "supertrend"]:
+        for strategy_name in decision_engine._adapters:
             stmt = (
                 select(Order)
                 .where(Order.strategy_name == strategy_name)
@@ -61,22 +56,11 @@ def run_nightly_job():
                 log_data["strategies"][strategy_name] = {"status": "skipped_insufficient_data"}
                 continue
                 
-            wins = []
-            losses = []
-            recent_losses = 0
-            
-            # Check last 5 trades for loss cluster
-            for i, o in enumerate(orders[:5]):
-                if float(o.pnl) <= 0:
-                    recent_losses += 1
-            
-            for o in orders:
-                pnl = float(o.pnl)
-                if pnl > 0:
-                    wins.append(pnl)
-                else:
-                    losses.append(pnl)
-                    
+            pnls = [float(o.pnl) for o in orders]   # newest first
+            wins = [p for p in pnls if p > 0]
+            losses = [p for p in pnls if p <= 0]
+            recent_losses = sum(1 for p in pnls[:5] if p <= 0)   # loss cluster check
+
             total_trades = len(orders)
             win_rate = len(wins) / total_trades
             gross_profit = sum(wins)
@@ -97,10 +81,8 @@ def run_nightly_job():
                 log_data["alerts"].append(msg)
                 
             # Anomaly: Loss cluster
-            elif recent_losses >= 5:
-                # Normal formula but halved
-                base_weight = _clamp(profit_factor * 0.5 + win_rate * 0.5, 0.2, 2.0)
-                new_weight = _clamp(base_weight * 0.5, 0.2, 2.0)
+            elif recent_losses >= 5:   # normal formula, halved
+                new_weight = _clamp(_clamp(profit_factor * 0.5 + win_rate * 0.5, 0.2, 2.0) * 0.5, 0.2, 2.0)
                 msg = f"WARNING: Loss cluster detected for {strategy_name} (5 consecutive losses). Halving weight."
                 logger.warning(msg)
                 log_data["alerts"].append(msg)

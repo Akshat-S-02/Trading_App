@@ -22,12 +22,12 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 import zoneinfo
 
-import requests
+import httpx
 
 from app.config import config  # reuse existing Dhan credentials
+from research.utils.market_calendar import is_in_session
 
 logger = logging.getLogger("HistoricalDataService")
 
@@ -44,11 +44,6 @@ _INTRADAY_URL = "https://api.dhan.co/v2/charts/intraday"
 _CHUNK_DAYS   = 85      # Dhan limit is 90; use 85 with a safety margin
 _RATE_LIMIT_S = 0.5     # seconds between requests
 
-# NSE equity session in IST
-_SESSION_START = (9, 15)   # 09:15 IST
-_SESSION_END   = (15, 30)  # 15:30 IST
-
-
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -58,18 +53,6 @@ def _get_headers() -> dict:
         "Content-Type":  "application/json",
         "access-token":  config.ACCESS_TOKEN,
     }
-
-
-def _ist_to_utc(dt_ist: datetime) -> datetime:
-    return dt_ist.astimezone(_UTC)
-
-
-def _is_in_session(dt_utc: datetime) -> bool:
-    """Check whether a UTC datetime falls within NSE equity session (09:15–15:30 IST)."""
-    dt_ist = dt_utc.astimezone(_IST)
-    session_start = dt_ist.replace(hour=_SESSION_START[0], minute=_SESSION_START[1], second=0, microsecond=0)
-    session_end   = dt_ist.replace(hour=_SESSION_END[0],   minute=_SESSION_END[1],   second=0, microsecond=0)
-    return session_start <= dt_ist <= session_end
 
 
 def _chunk_date_range(from_date: datetime, to_date: datetime, max_days: int = _CHUNK_DAYS) -> list[tuple[datetime, datetime]]:
@@ -115,7 +98,7 @@ def _normalize_response(
         dt_utc = datetime.fromtimestamp(ts, tz=_UTC)
 
         # Session filter for intraday candles
-        if apply_session_filter and not _is_in_session(dt_utc):
+        if apply_session_filter and not is_in_session(dt_utc):
             continue
 
         try:
@@ -171,7 +154,7 @@ def fetch_daily(
     logger.info(f"Fetching daily candles: {symbol} [{from_date.date()} → {to_date.date()}]")
 
     try:
-        resp = requests.post(_DAILY_URL, json=payload, headers=_get_headers(), timeout=30)
+        resp = httpx.post(_DAILY_URL, json=payload, headers=_get_headers(), timeout=30)
         resp.raise_for_status()
         raw = resp.json()
 
@@ -188,8 +171,8 @@ def fetch_daily(
         logger.info(f"  → {len(candles)} daily candles fetched for {symbol}")
         return candles
 
-    except requests.HTTPError as e:
-        logger.error(f"HTTP error fetching daily candles for {symbol}: {e} — {e.response.text if e.response else ''}")
+    except httpx.HTTPStatusError as e:
+        logger.error(f"HTTP error fetching daily candles for {symbol}: {e} — {e.response.text[:300]}")
         raise
     except Exception as e:
         logger.error(f"Error fetching daily candles for {symbol}: {e}")
@@ -232,7 +215,7 @@ def fetch_intraday(
         }
 
         try:
-            resp = requests.post(_INTRADAY_URL, json=payload, headers=_get_headers(), timeout=30)
+            resp = httpx.post(_INTRADAY_URL, json=payload, headers=_get_headers(), timeout=30)
             resp.raise_for_status()
             raw = resp.json()
 
@@ -250,7 +233,7 @@ def fetch_intraday(
             all_candles.extend(candles)
             logger.info(f"  Chunk [{chunk_from.date()} → {chunk_to.date()}]: {len(candles)} candles")
 
-        except requests.HTTPError as e:
+        except httpx.HTTPStatusError as e:
             logger.error(f"  HTTP error [{chunk_from.date()} → {chunk_to.date()}] for {symbol}: {e}")
             raise
 

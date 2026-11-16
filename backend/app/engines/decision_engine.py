@@ -12,7 +12,6 @@ from typing import Optional, Dict, List
 import json
 import os
 
-# SQLAlchemy imports for EV filter
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
@@ -33,85 +32,63 @@ ALLOW_SHORT_SIGNALS = False  # automated shorts off until backtested; manual sho
 class DecisionEngine:
     def __init__(self, strategy_id: int):
         self.strategy_id = strategy_id
-        
-        self._orb_adapter = MomentumORBv4Adapter(strategy_id)
-        self._ema_adapter = EMAMomentumAdapter(strategy_id)
-        self._vwap_adapter = VWAPReversionAdapter(strategy_id)
-        self._supertrend_adapter = SupertrendAdapter(strategy_id)
-        
-        # We don't instantiate the classifier since its methods are classmethods
-        self._regime_classifier = RegimeClassifier
-        
-        self._strategy_weights: Dict[str, float] = {
-            "orb_v4": 1.0, 
-            "ema_momentum": 1.0,
-            "vwap_reversion": 1.0,
-            "supertrend": 1.0
+        self._adapters = {
+            "orb_v4": MomentumORBv4Adapter(strategy_id),
+            "ema_momentum": EMAMomentumAdapter(strategy_id),
+            "vwap_reversion": VWAPReversionAdapter(strategy_id),
+            "supertrend": SupertrendAdapter(strategy_id),
         }
-        
+        self._regime_classifier = RegimeClassifier   # classmethods only
+        self._strategy_weights: Dict[str, float] = dict.fromkeys(self._adapters, 1.0)
         self._weights_file = os.path.join(os.path.dirname(__file__), '../../strategy_weights.json')
-        
         self._load_state()
-
         self._bar_history: Dict[str, list[dict]] = {}
         self._last_regime: Dict[str, str] = {}
+
+    @property
+    def _orb_adapter(self):
+        return self._adapters["orb_v4"]
+
+    def feed_state_only(self, symbol: str, candle: dict) -> None:
+        """Advance every strategy's state on this candle without letting any signal."""
+        for adapter in self._adapters.values():
+            adapter.on_candle(symbol, candle, allow_signal=False)
 
     def evaluate(self, symbol: str, candle: dict) -> Optional[AppSignal]:
         """
         Evaluate a completed candle against active strategies, filter by regime and EV.
         """
-        if symbol not in self._bar_history:
-            self._bar_history[symbol] = []
-            
-        history = self._bar_history[symbol]
-        
-        # Ensure timestamp, close, high, low, volume are present
-        bar = {
+        history = self._bar_history.setdefault(symbol, [])
+        history.append({
             "timestamp": candle["timestamp"],
             "open": float(candle["open"]),
             "high": float(candle["high"]),
             "low": float(candle["low"]),
             "close": float(candle["close"]),
             "volume": int(candle.get("volume", 0)),
-        }
-        
-        history.append(bar)
+        })
         if len(history) > 100:
             history.pop(0)
-            
-        # 1. Classify Regime
+
+        # 1. Classify Regime (needs 20 bars)
         regime_data = self._regime_classifier.classify(history)
         if not regime_data:
             self._last_regime[symbol] = "INSUFFICIENT_DATA"
-            # Not enough data (needs 20 bars)
-            self._orb_adapter.on_candle(symbol, candle, allow_signal=False)
-            self._ema_adapter.on_candle(symbol, candle, allow_signal=False)
-            self._vwap_adapter.on_candle(symbol, candle, allow_signal=False)
-            self._supertrend_adapter.on_candle(symbol, candle, allow_signal=False)
+            self.feed_state_only(symbol, candle)
             return None
-            
         regime = regime_data["regime"]
         trend = regime_data["trend"]
         allowed_strategies = self._regime_classifier.STRATEGY_MATRIX.get((regime, trend), [])
-        
         self._last_regime[symbol] = f"{regime.value} + {trend}"
-        
-        # 2. Collect Signals
-        adapter_map = {
-            "orb_v4": self._orb_adapter,
-            "ema_momentum": self._ema_adapter,
-            "vwap_reversion": self._vwap_adapter,
-            "supertrend": self._supertrend_adapter
-        }
-        
-        # Every strategy sees every candle so its state (opening range, VWAP,
+
+        # 2. Every strategy sees every candle so its state (opening range, VWAP,
         # EMAs) has no gaps; the regime only decides which may signal.
         signals: List[AppSignal] = []
-        for strategy_name, adapter in adapter_map.items():
+        for strategy_name, adapter in self._adapters.items():
             sig = adapter.on_candle(symbol, candle, allow_signal=strategy_name in allowed_strategies)
             if sig:
                 signals.append(sig)
-            
+
         # Shorts (Supertrend, VWAP) were never backtested: the engine dropped them
         # until 2026-11-09. Flip ALLOW_SHORT_SIGNALS once their backtest holds up.
         if not ALLOW_SHORT_SIGNALS:
@@ -127,40 +104,18 @@ class DecisionEngine:
         signals = [s for s in signals if s not in disabled]
         if not signals:
             return None
-            
-        # 3. Apply EV Filter
-        valid_signals = []
+
+        # 3. EV filter, then 4. highest weight wins (first one on a tie)
         with SessionLocal() as db:
-            for sig in signals:
-                if self._passes_ev_filter(symbol, sig.strategy_name, db):
-                    valid_signals.append(sig)
-                    
+            valid_signals = [sig for sig in signals if self._passes_ev_filter(symbol, sig.strategy_name, db)]
         if not valid_signals:
             return None
-            
-        # 4. Score and Pick Best Signal
-        winner: Optional[AppSignal] = None
-        
-        if len(valid_signals) == 1:
-            winner = valid_signals[0]
-        else:
-            # Simple scoring: confidence * weight (assuming base confidence=1.0 for now)
-            # If signals had a 'confidence' attribute, we'd use it here.
-            best_score = -1.0
-            for sig in valid_signals:
-                weight = self._strategy_weights.get(sig.strategy_name, 1.0)
-                score = 1.0 * weight  # 1.0 is default confidence
-                if score > best_score:
-                    best_score = score
-                    winner = sig
-                    
-        if winner:
-            logger.info(
-                f"DecisionEngine: regime={regime.value} trend={trend} "
-                f"allowed={allowed_strategies} signals={len(signals)} "
-                f"winner={winner.strategy_name}"
-            )
-            
+        winner = max(valid_signals, key=lambda sig: self._strategy_weights.get(sig.strategy_name, 1.0))
+        logger.info(
+            f"DecisionEngine: regime={regime.value} trend={trend} "
+            f"allowed={allowed_strategies} signals={len(signals)} "
+            f"winner={winner.strategy_name}"
+        )
         return winner
 
     def _passes_ev_filter(self, symbol: str, strategy_name: str, db: Session) -> bool:
@@ -183,26 +138,16 @@ class DecisionEngine:
         if len(orders) < 10:
             return True
             
-        wins = []
-        losses = []
-        
-        for o in orders:
-            pnl = float(o.pnl)
-            if pnl > 0:
-                wins.append(pnl)
-            else:
-                # Include breakeven as a loss (or 0)
-                losses.append(pnl)
-                
-        total_trades = len(orders)
-        win_rate = len(wins) / total_trades
-        
-        avg_win = (sum(wins) / len(wins)) if wins else 0.0
-        avg_loss = (sum(losses) / len(losses)) if losses else 0.0
-        
-        # Expected Value = (Win Rate x Avg Win) - (Loss Rate x Avg Loss Abs)
-        ev = (win_rate * avg_win) - ((1 - win_rate) * abs(avg_loss))
-        
+        # Expected value per trade; breakeven counts as a loss
+        pnls = [float(o.pnl) for o in orders]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        win_rate = len(wins) / len(pnls)
+        avg_win = sum(wins) / len(wins) if wins else 0.0
+        avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
+        ev = win_rate * avg_win - (1 - win_rate) * avg_loss
+        total_trades = len(pnls)
+
         if ev < 0:
             logger.warning(
                 f"EV Filter BLOCKED {strategy_name} on {symbol}: "

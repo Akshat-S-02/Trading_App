@@ -1,10 +1,10 @@
 """
 app/services/token_renewal.py
 
-Smart Dhan ACCESS_TOKEN renewal using the official dhanhq SDK.
+Dhan ACCESS_TOKEN renewal (httpx calls to Dhan).
 
 Renewal strategy (in priority order):
-  1. PIN + TOTP  → dhanhq.DhanLogin.generate_token(pin, totp)
+  1. PIN + TOTP  → POST auth.dhan.co/app/generateAccessToken
        Generates a BRAND NEW token — works even if the current one is expired.
        Requires DHAN_PIN and DHAN_TOTP_SECRET in .env.
 
@@ -27,144 +27,98 @@ import asyncio
 import base64
 import json
 import os
+import re
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 import httpx
 from dotenv import dotenv_values
 
 from app.config import config
 
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-MARKET_START_H, MARKET_START_M = 8, 45     # 8:45 AM IST
-MARKET_END_H,   MARKET_END_M   = 17, 0     # 5:00 PM IST
-PRE_MARKET_RENEWAL_H = 8                   # renew at 08:15 if exp is in market hours
-PRE_MARKET_RENEWAL_M = 15
-PRE_EXPIRY_BUFFER_S  = 3600               # 1 hour before expiry (non-market case)
-
-IST_OFFSET_S   = 5 * 3600 + 30 * 60      # 19800 seconds
+_IST = ZoneInfo("Asia/Kolkata")
+MARKET_START = dt_time(8, 45)             # an expiry in this window is renewed
+MARKET_END = dt_time(17, 0)               # at 08:15 the same morning instead
+PRE_MARKET_RENEWAL = dict(hour=8, minute=15, second=0, microsecond=0)
+PRE_EXPIRY_BUFFER_S = 3600                # otherwise renew 1 hour before expiry
 DHAN_RENEW_URL = "https://api.dhan.co/v2/RenewToken"
+_ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 
-# ── Module-level state (read by admin.py for /api/admin/token-status) ─────────
-
-_stored_exp_ts: float | None   = None   # current token expiry epoch
-_next_renewal_at: float | None = None   # computed next renewal epoch
-
-last_renewal_at: float | None  = None
-last_renewal_ok: bool          = False
-last_renewal_error: str | None = None
-
-
-# ── IST datetime arithmetic (no pytz needed) ──────────────────────────────────
-
-def _ist_components(epoch: float):
-    dt = datetime.utcfromtimestamp(epoch + IST_OFFSET_S)
-    return dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second
-
-
-def _ist_to_epoch(year, month, day, hour, minute, second=0) -> float:
-    import calendar
-    naive = datetime(year, month, day, hour, minute, second)
-    return float(calendar.timegm(naive.timetuple()) - IST_OFFSET_S)
+_next_renewal_at: float | None = None     # epoch of the next scheduled renewal
 
 
 def _fmt_epoch_ist(epoch: float) -> str:
-    y, mo, d, h, mi, s = _ist_components(epoch)
-    return f"{y:04d}-{mo:02d}-{d:02d} {h:02d}:{mi:02d}:{s:02d}"
+    return datetime.fromtimestamp(epoch, _IST).strftime("%Y-%m-%d %H:%M:%S")
 
-
-# ── JWT decode ────────────────────────────────────────────────────────────────
 
 def _token_exp(token: str) -> float | None:
+    """The JWT's exp claim (no signature check: we only schedule by it)."""
     try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-        padding = 4 - len(parts[1]) % 4
-        padded  = parts[1] + ("=" * (padding % 4))
-        payload = json.loads(base64.urlsafe_b64decode(padded))
-        return float(payload["exp"])
+        _, payload, _ = token.split(".")
+        return float(json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))["exp"])
     except Exception:
         return None
 
 
-# ── Renewal scheduling ────────────────────────────────────────────────────────
+def _expires_in_market_hours(exp_ts: float) -> bool:
+    t = datetime.fromtimestamp(exp_ts, _IST).time().replace(second=0, microsecond=0)
+    return MARKET_START <= t <= MARKET_END
+
 
 def _compute_next_renewal(exp_ts: float) -> float:
-    """
-    Given a token's expiry epoch, return when to schedule the next renewal.
-      - Expiry during market hours → renew at 8:15 AM IST same day
-      - Expiry outside market hours → renew 1 hour before expiry
-      - If computed renewal already past → renew in 60 s
-    """
-    y, mo, d, h, mi, _ = _ist_components(exp_ts)
-    exp_min = h * 60 + mi
-    market_start = MARKET_START_H * 60 + MARKET_START_M  # 525
-    market_end   = MARKET_END_H   * 60 + MARKET_END_M    # 1020
-
-    if market_start <= exp_min <= market_end:
-        renewal_ts = _ist_to_epoch(y, mo, d, PRE_MARKET_RENEWAL_H, PRE_MARKET_RENEWAL_M)
+    """When to renew a token expiring at exp_ts; never sooner than 60 s from now."""
+    if _expires_in_market_hours(exp_ts):
+        renewal_ts = datetime.fromtimestamp(exp_ts, _IST).replace(**PRE_MARKET_RENEWAL).timestamp()
     else:
         renewal_ts = exp_ts - PRE_EXPIRY_BUFFER_S
-
-    now = time.time()
-    return max(renewal_ts, now + 60.0)
+    return max(renewal_ts, time.time() + 60.0)
 
 
 def _seconds_until_next_renewal() -> float:
     if _next_renewal_at is not None:
         return max(_next_renewal_at - time.time(), 60.0)
     exp = _token_exp(config.ACCESS_TOKEN)
-    if exp:
-        return max(_compute_next_renewal(exp) - time.time(), 60.0)
-    return 300.0
+    return max(_compute_next_renewal(exp) - time.time(), 60.0) if exp else 300.0
 
 
 def initialize_renewal_schedule() -> None:
-    global _stored_exp_ts, _next_renewal_at
+    global _next_renewal_at
     exp = _token_exp(config.ACCESS_TOKEN)
     if exp is None:
         print("⚠️  token_renewal: cannot read expiry from ACCESS_TOKEN.", file=sys.stderr)
         return
-    _stored_exp_ts   = exp
     _next_renewal_at = _compute_next_renewal(exp)
-    exp_ist    = _fmt_epoch_ist(exp)
-    renew_ist  = _fmt_epoch_ist(_next_renewal_at)
-    y, mo, d, h, mi, _ = _ist_components(exp)
-    exp_min    = h * 60 + mi
-    in_market  = (MARKET_START_H*60+MARKET_START_M) <= exp_min <= (MARKET_END_H*60+MARKET_END_M)
-    reason     = "market-hours expiry -> 8:15 AM IST" if in_market else "1h before expiry"
-    print(f"DATE  Token expiry:  {exp_ist} IST\n"
-          f"TIME  Next renewal: {renew_ist} IST  ({reason})", flush=True)
+    reason = "market-hours expiry -> 8:15 AM IST" if _expires_in_market_hours(exp) else "1h before expiry"
+    print(f"DATE  Token expiry:  {_fmt_epoch_ist(exp)} IST\n"
+          f"TIME  Next renewal: {_fmt_epoch_ist(_next_renewal_at)} IST  ({reason})", flush=True)
 
 
 # ── .env persistence ──────────────────────────────────────────────────────────
 
 def _rewrite_env_key(key: str, value: str) -> None:
-    import os, re
-    env_path = os.path.normpath(
-        os.path.join(os.path.dirname(__file__), "..", "..", ".env")
-    )
+    """Set one key=value line in .env (appended if missing)."""
+    # A line break in value would write extra keys (EXECUTION_MODE=live, ...) into .env
+    if any(ch in value for ch in "\r\n\x00"):
+        raise ValueError(f"refusing to write control characters into {key}")
     try:
-        with open(env_path, "r") as f:
+        with open(_ENV_PATH) as f:
             lines = f.readlines()
-        pattern  = re.compile(rf"^\s*{re.escape(key)}\s*=")
-        replaced = False
-        new_lines = []
-        for line in lines:
-            if pattern.match(line):
-                new_lines.append(f"{key}={value}\n")
-                replaced = True
-            else:
-                new_lines.append(line)
-        if not replaced:
-            new_lines.append(f"{key}={value}\n")
-        with open(env_path, "w") as f:
-            f.writelines(new_lines)
+        pattern = re.compile(rf"^\s*{re.escape(key)}\s*=")
+        new_line = f"{key}={value}\n"
+        if any(pattern.match(line) for line in lines):
+            lines = [new_line if pattern.match(line) else line for line in lines]
+        else:
+            lines.append(new_line)
+        with open(_ENV_PATH, "w") as f:
+            f.writelines(lines)
     except Exception as e:
         print(f"⚠️  token_renewal: could not persist to .env: {e}", file=sys.stderr)
+
+
+def _token_from(data: dict) -> str | None:
+    return data.get("accessToken") or data.get("access_token") or (data.get("data") or {}).get("accessToken")
 
 
 # ── Renewal methods ───────────────────────────────────────────────────────────
@@ -202,12 +156,8 @@ async def _renew_via_pin_totp() -> str | None:
             print(f"⚠️  PIN+TOTP HTTP {resp.status_code}: {resp.text[:300]}", file=sys.stderr)
             return None
 
-        data      = resp.json()
-        new_token = (
-            data.get("accessToken")
-            or data.get("access_token")
-            or (data.get("data") or {}).get("accessToken")
-        )
+        data = resp.json()
+        new_token = _token_from(data)
         if new_token:
             print("KEY PIN+TOTP login succeeded. New token obtained.", flush=True)
         else:
@@ -238,7 +188,7 @@ async def _renew_via_renew_token() -> str | None:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(
-                "https://api.dhan.co/v2/RenewToken",
+                DHAN_RENEW_URL,
                 headers={
                     "access-token": current_token,
                     "client-id":    client_id,
@@ -251,18 +201,11 @@ async def _renew_via_renew_token() -> str | None:
             print(f"⚠️  RenewToken HTTP {resp.status_code}: {resp.text[:200]}", file=sys.stderr)
             return None
 
-        data = resp.json()
-        return (
-            data.get("accessToken")
-            or data.get("access_token")
-            or (data.get("data") or {}).get("accessToken")
-        )
+        return _token_from(resp.json())
 
     except Exception as e:
         print(f"⚠️  RenewToken exception: {e}", file=sys.stderr)
         return None
-
-
 
 
 # ── Main renewal entry point ──────────────────────────────────────────────────
@@ -272,8 +215,7 @@ async def _do_renewal() -> bool:
     Attempt token renewal using the best available method (PIN+TOTP first,
     then RenewToken fallback). Updates config, .env, and internal state.
     """
-    global last_renewal_at, last_renewal_ok, last_renewal_error
-    global _stored_exp_ts, _next_renewal_at
+    global _next_renewal_at
 
     # ── Method 1: PIN + TOTP (preferred — works even when token is expired) ───
     new_token = await _renew_via_pin_totp()
@@ -284,9 +226,7 @@ async def _do_renewal() -> bool:
         new_token = await _renew_via_renew_token()
 
     if not new_token:
-        last_renewal_at    = time.time()
-        last_renewal_ok    = False
-        last_renewal_error = "Both PIN+TOTP and RenewToken methods failed"
+        print("❌  Both PIN+TOTP and RenewToken failed.", file=sys.stderr, flush=True)
         return False
 
     # ── Success — hot-swap and recompute schedule ─────────────────────────────
@@ -295,21 +235,15 @@ async def _do_renewal() -> bool:
 
     new_exp = _token_exp(new_token)
     if new_exp:
-        _stored_exp_ts   = new_exp
         _next_renewal_at = _compute_next_renewal(new_exp)
         print(f"✅ Token renewed.\n"
               f"   Expiry:       {_fmt_epoch_ist(new_exp)} IST\n"
               f"   Next renewal: {_fmt_epoch_ist(_next_renewal_at)} IST", flush=True)
-
-    last_renewal_at    = time.time()
-    last_renewal_ok    = True
-    last_renewal_error = None
     return True
 
 
 # ── External Health Check API ─────────────────────────────────────────────────
 
-_ENV_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", ".env"))
 _env_mtime: float | None = None
 _rejected_token: str | None = None      # token Dhan answered 401 for
 _wake: asyncio.Event | None = None      # set to cut the renewal loop's sleep short
@@ -341,9 +275,8 @@ def handle_401_unauthorized():
     Marks the current token as rejected so is_token_valid() turns False, and
     wakes the renewal loop (API process only) to renew right away.
     """
-    global last_renewal_ok, _next_renewal_at, _rejected_token
+    global _next_renewal_at, _rejected_token
     _rejected_token = config.ACCESS_TOKEN
-    last_renewal_ok = False
     _next_renewal_at = time.time()
     if _loop is not None and _wake is not None:
         _loop.call_soon_threadsafe(_wake.set)
@@ -388,15 +321,14 @@ async def token_renewal_loop() -> None:
 
         for attempt in range(1, 4):
             print(f"🔄  Token renewal attempt {attempt}/3 …", flush=True)
-            success = await _do_renewal()
-            if success:
+            if await _do_renewal():
                 break
             if attempt < 3:
                 print("   Retrying in 5 minutes …", flush=True)
                 await asyncio.sleep(300)
         else:
             print("❌  All 3 renewal attempts failed. "
-                  "Use the Admin screen to rotate the token manually.",
+                  "Run force_renew.py, or put a fresh ACCESS_TOKEN in .env and restart.",
                   file=sys.stderr, flush=True)
 
         await asyncio.sleep(120)

@@ -102,46 +102,36 @@ class MarketDataProvider with ChangeNotifier {
       }
       notifyListeners();
 
-      // Seed prices for all watchlist symbols in one fast batch request
-      _seedWatchlistPricesBatch();
+      _seedPrices(_watchlist);
     } catch (e) {
       debugPrint('Error loading watchlist: $e');
     }
   }
 
-  Future<void> _seedWatchlistPricesBatch() async {
-    if (_watchlist.isEmpty) return;
-
+  /// One HTTP snapshot to seed prices; the backend also subscribes the symbols
+  /// to its live feed.
+  Future<void> _seedPrices(List<String> symbols) async {
+    if (symbols.isEmpty) return;
     try {
       final response = await http.post(
         Uri.parse('$_baseUrl/api/market/ltp/batch'),
         headers: await AuthService.authHeaders(),
-        body: jsonEncode({'symbols': _watchlist}),
-      );
-
+        body: jsonEncode({'symbols': symbols}),
+      ).timeout(const Duration(seconds: 10));
       AuthService.checkAuth(response);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final results = data['results'] as Map<String, dynamic>?;
-        if (results != null) {
-          bool updated = false;
-          results.forEach((bareSymbol, info) {
-            final ltp = info['ltp'];
-            if (ltp != null && ltp != 0) {
-              final price = (ltp is num) ? ltp.toDouble() : double.tryParse(ltp.toString());
-              if (price != null && price > 0) {
-                _prices['$bareSymbol.NS'] = price;
-                _prices[bareSymbol] = price;
-                updated = true;
-              }
-            }
-          });
-          if (updated) notifyListeners();
+      if (response.statusCode != 200) return;
+      final results = jsonDecode(response.body)['results'] as Map<String, dynamic>?;
+      var updated = false;
+      results?.forEach((bareSymbol, info) {
+        final ltp = info['ltp'];
+        if (ltp is num && ltp > 0) {
+          _updatePrice(bareSymbol, ltp.toDouble());
+          updated = true;
         }
-      }
+      });
+      if (updated) notifyListeners();
     } catch (e) {
-      debugPrint('Batch subscription failed: $e');
+      debugPrint('Price seed failed for $symbols: $e');
     }
   }
 
@@ -159,10 +149,7 @@ class MarketDataProvider with ChangeNotifier {
       _watchlist.insert(0, symbol);
       _saveWatchlist();
       notifyListeners();
-      
-      // For a single symbol added by the user, we can still use the batch API
-      // just with an array of 1, to keep it simple.
-      _seedSinglePrice(symbol);
+      _seedPrices([symbol]);
     }
   }
 
@@ -192,39 +179,7 @@ class MarketDataProvider with ChangeNotifier {
   /// Make sure [symbol] has a price (and that the backend subscribes to it),
   /// e.g. when trading a stock that isn't in the watchlist.
   void ensurePrice(String symbol) {
-    if (getPrice(symbol) == null) _seedSinglePrice(symbol);
-  }
-
-  // ── HTTP snapshot to seed price + tell backend to subscribe ─────────────────
-
-  Future<void> _seedSinglePrice(String symbol) async {
-    try {
-      final response = await http.post(
-        Uri.parse('$_baseUrl/api/market/ltp/batch'),
-        headers: await AuthService.authHeaders(),
-        body: jsonEncode({'symbols': [symbol]}),
-      );
-      AuthService.checkAuth(response);
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final results = data['results'] as Map<String, dynamic>?;
-        if (results != null) {
-          results.forEach((bareSymbol, info) {
-            final ltp = info['ltp'];
-            if (ltp != null && ltp != 0) {
-              final price = (ltp is num) ? ltp.toDouble() : double.tryParse(ltp.toString());
-              if (price != null && price > 0) {
-                _prices['$bareSymbol.NS'] = price;
-                _prices[bareSymbol] = price;
-                notifyListeners();
-              }
-            }
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('Single subscription failed for $symbol: $e');
-    }
+    if (getPrice(symbol) == null) _seedPrices([symbol]);
   }
 
   // ── WebSocket message ingestion ──────────────────────────────────────────────
@@ -232,18 +187,13 @@ class MarketDataProvider with ChangeNotifier {
   void _ingest(dynamic msg) {
     try {
       final data = msg is String ? jsonDecode(msg) : msg;
-
-      if (data is List) {
-        for (final item in data) {
-          if (item is Map && item.containsKey('symbol') && item.containsKey('LTP')) {
-            _updatePrice(item['symbol'] as String, item['LTP']);
-          }
+      if (data is! List) return;   // backend sends [{symbol, LTP}, ...]
+      for (final item in data) {
+        if (item is Map && item['symbol'] is String && item.containsKey('LTP')) {
+          _updatePrice(item['symbol'], item['LTP']);
         }
-        notifyListeners();
-      } else if (data is Map && data.containsKey('symbol') && data.containsKey('LTP')) {
-        _updatePrice(data['symbol'] as String, data['LTP']);
-        notifyListeners();
       }
+      notifyListeners();
     } catch (e) {
       debugPrint('⚠️ MarketData WS ingest error: $e');
     }

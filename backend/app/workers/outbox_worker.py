@@ -90,7 +90,7 @@ class OutboxWorker:
         correlation_id = payload.get("correlation_id")
 
         order = self.db.query(Order).filter(Order.id == event.order_id).first()
-        mode = config.EXECUTION_MODE.lower()
+        mode = config.EXECUTION_MODE
 
         try:
             if order is not None and order.status not in SENDABLE:
@@ -110,6 +110,14 @@ class OutboxWorker:
                 logger.info(f"[{self.worker_id}] PAPER mode: simulating fill for {qty}x {symbol} | CorrId: {correlation_id}")
                 resp = paper_place_order(symbol=symbol, qty=qty, direction=direction, price=price,
                                          order_type=order_type, correlation_id=correlation_id)
+            elif mode != "live" or not config.DHAN_STATIC_IP_CONFIRMED:
+                # Never fall through to a real order: only a confirmed live mode may send.
+                logger.critical(f"[{self.worker_id}] Refusing to send order {event.order_id}: "
+                                f"EXECUTION_MODE={mode!r}, static IP confirmed={config.DHAN_STATIC_IP_CONFIRMED}")
+                event.status = OutboxEventStatus.FAILED
+                if order:
+                    order.status = OrderStatus.FAILED_FATAL
+                return True
             else:
                 resp = self._send_live(event, symbol, qty, direction, price, order_type, correlation_id)
                 if resp is None:  # could not confirm whether it went out: retry later, don't resend blind
@@ -205,7 +213,7 @@ class OutboxWorker:
             order = self.db.query(Order).filter(Order.id == event.order_id).first()
             if order:
                 order.status = OrderStatus.FAILED_FATAL
-            if config.EXECUTION_MODE.lower() == "live":
+            if config.EXECUTION_MODE == "live":
                 sync_dispatch_alert("CRITICAL", "Order state unknown",
                                     f"Order {event.order_id} gave up after {MAX_RETRIES} retries. "
                                     f"Check Dhan for correlation id {event.payload.get('correlation_id')}.")

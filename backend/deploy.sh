@@ -7,13 +7,14 @@ HOST=ubuntu@13.200.209.203
 cd "$(dirname "$0")"
 
 # Excluded: server secrets (.env), databases, and files the server writes at runtime (learned weights, logs),
-# so a deploy never overwrites live state with the Mac's copy.
-rsync -avz \
+# so a deploy never overwrites live state with the Mac's copy. --delete removes server files deleted here
+# (excluded paths are never deleted), so the server never runs code that is no longer in the repo.
+rsync -avz --delete \
   --exclude '.venv' --exclude 'venv' --exclude '__pycache__' --exclude 'logs' --exclude '*.log' \
-  --exclude '.env' --exclude '*.db' \
+  --exclude '.env*' --exclude '*.pem' --exclude '*.db' \
   --exclude 'strategy_weights.json' --exclude 'strategy_params.json' --exclude 'learning_log_*.json' \
   --exclude 'portfolio.json' --exclude 'trades.json' --exclude 'stocks_cache.json' --exclude 'paper_session_telemetry.json' \
-  --exclude 'tests' --exclude 'app/simulation' --exclude 'test_*.py' --exclude 'verify_*.py' --exclude 'init_db.py' --exclude '.pytest_cache' \
+  --exclude 'tests' --exclude 'test_*.py' --exclude 'verify_*.py' --exclude 'init_db.py' --exclude '.pytest_cache' \
   -e "ssh -i $KEY" ./ "$HOST:~/backend/"
 
 ssh -i "$KEY" "$HOST" 'cd ~/backend && .venv/bin/pip install -q -r requirements.txt \

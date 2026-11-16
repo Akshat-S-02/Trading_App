@@ -75,6 +75,7 @@ def test_event_in_flight_right_now_is_left_alone(db):
 
 def test_live_timeout_is_not_a_rejection_and_retry_looks_up_first(db, monkeypatch):
     monkeypatch.setattr(ow.config, "EXECUTION_MODE", "live")
+    monkeypatch.setattr(ow.config, "DHAN_STATIC_IP_CONFIRMED", True)
     sent, looked_up = [], []
     monkeypatch.setattr(ow.dhan_service, "place_order",
                         lambda **kw: sent.append(kw) or {"status": "unknown", "error": "timeout"})
@@ -96,6 +97,7 @@ def test_live_timeout_is_not_a_rejection_and_retry_looks_up_first(db, monkeypatc
 
 def test_live_retry_with_failed_lookup_does_not_send(db, monkeypatch):
     monkeypatch.setattr(ow.config, "EXECUTION_MODE", "live")
+    monkeypatch.setattr(ow.config, "DHAN_STATIC_IP_CONFIRMED", True)
     sent = []
     monkeypatch.setattr(ow.dhan_service, "place_order", lambda **kw: sent.append(kw) or {"status": "success"})
     def boom(cid): raise ConnectionError("dhan down")

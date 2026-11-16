@@ -3,13 +3,9 @@ import 'package:intl/intl.dart';
 import '../ui/theme.dart';
 
 final _inr = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 2);
-final _inrCompact = NumberFormat.currency(locale: 'en_IN', symbol: '₹', decimalDigits: 0);
 
 /// ₹1,23,456.78
 String inr(num? v) => v == null ? '—' : _inr.format(v);
-
-/// ₹1,23,457 (no paise) for large summary figures
-String inrWhole(num? v) => v == null ? '—' : _inrCompact.format(v);
 
 /// +₹120.50 / -₹80.00
 String signedInr(num? v) {
@@ -38,5 +34,3 @@ String timeOf(dynamic iso) {
 
 const kBuyColor = AppColors.green;
 const kSellColor = AppColors.red;
-const kCardColor = AppColors.card;
-const kBgColor = AppColors.bg;

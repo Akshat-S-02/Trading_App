@@ -14,15 +14,16 @@ import pandas as pd
 CSV_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "api-scrip-master.csv")
 
 df = None
+nse_eq_df = None   # NSE equities only; what stock search scans
 symbol_to_sid: dict[str, int] = {}
 sid_to_symbol: dict[int, str] = {}
 
 
 def load_instruments():
-    global df, symbol_to_sid, sid_to_symbol
+    global df, nse_eq_df, symbol_to_sid, sid_to_symbol
     if not os.path.exists(CSV_PATH):
         print(f"❌ Instrument CSV not found at {CSV_PATH}")
-        df = pd.DataFrame()
+        df = nse_eq_df = pd.DataFrame()
         return
 
     df = pd.read_csv(CSV_PATH, low_memory=False)
@@ -37,6 +38,7 @@ def load_instruments():
                  & (valid["sem_instrument_name"] == "EQUITY")
                  & (valid["sem_series"] == "EQ"))
     nse_eq, others = valid[is_nse_eq], valid[~is_nse_eq]
+    nse_eq_df = nse_eq
 
     def pairs(frame):
         return zip(frame["sem_smst_security_id"].astype(int), frame["sem_trading_symbol"])
@@ -47,10 +49,6 @@ def load_instruments():
     symbol_to_sid = {sym: sid for sid, sym in pairs(nse_eq)}
 
     print(f"✅ Loaded {len(df)} instruments; {len(symbol_to_sid)} NSE_EQ symbols mapped.")
-
-
-def get_all_instruments():
-    return df
 
 
 def get_security_id(symbol: str):
@@ -72,6 +70,3 @@ def get_security_id_multi(symbols: list[str]):
             result[sym.upper().strip()] = str(sid)
     return result
 
-
-def resolve_symbol_from_sid(sid: int):
-    return sid_to_symbol.get(int(sid))

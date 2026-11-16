@@ -1,6 +1,6 @@
 """
 Alerts -> notifications table -> /api/notifications, and the SHORT-signal block.
-In-memory SQLite; Telegram is not called (no token in tests).
+In-memory SQLite.
 
     cd backend && .venv/bin/python -m pytest tests/test_notifications.py -q
 """
@@ -35,7 +35,6 @@ def Session(monkeypatch):
     Base.metadata.create_all(engine)
     S = sessionmaker(bind=engine)
     monkeypatch.setattr(app_db, "SessionLocal", S)          # alerts._store imports it lazily
-    monkeypatch.setattr(alerts, "TELEGRAM_BOT_TOKEN", None)
     return S
 
 
@@ -66,7 +65,6 @@ def test_store_failure_never_raises(monkeypatch):
     def broken():
         raise RuntimeError("db down")
     monkeypatch.setattr(app_db, "SessionLocal", broken)
-    monkeypatch.setattr(alerts, "TELEGRAM_BOT_TOKEN", None)
     asyncio.run(alerts.async_dispatch_alert("INFO", "x", "y"))   # must not raise
 
 
@@ -79,9 +77,7 @@ def test_short_signals_are_dropped_longs_kept():
     adapters = {"orb_v4": None, "ema_momentum": None, "vwap_reversion": sig("SHORT", "vwap_reversion"),
                 "supertrend": sig("LONG", "supertrend")}
     de = DecisionEngine.__new__(DecisionEngine)
-    for attr, name in [("_orb_adapter", "orb_v4"), ("_ema_adapter", "ema_momentum"),
-                       ("_vwap_adapter", "vwap_reversion"), ("_supertrend_adapter", "supertrend")]:
-        setattr(de, attr, NS(on_candle=lambda s, c, allow_signal=True, _r=adapters[name]: _r))
+    de._adapters = {name: NS(on_candle=lambda s, c, allow_signal=True, _r=r: _r) for name, r in adapters.items()}
     de._bar_history, de._last_regime, de._strategy_weights = {}, {}, {}
     de._passes_ev_filter = lambda *a: True
     import enum

@@ -2,7 +2,7 @@ import enum
 from sqlalchemy import Column, Integer, String, Numeric, DateTime, Time, Date, Boolean, ForeignKey, Enum, JSON, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
-from datetime import datetime, time, timezone
+from datetime import time
 from .db import Base
 
 class RiskCategory(str, enum.Enum):
@@ -19,16 +19,6 @@ class RiskCategory(str, enum.Enum):
         elif self == RiskCategory.HIGH:
             return 2.0
         return 0.75 # Default fallback
-
-class UserStatus(str, enum.Enum):
-    ACTIVE = "ACTIVE"
-    PAUSED = "PAUSED"
-    BANNED = "BANNED"
-
-class StrategyType(str, enum.Enum):
-    INTRADAY = "INTRADAY"
-    SWING = "SWING"
-    OPTIONS = "OPTIONS"
 
 class Direction(str, enum.Enum):
     LONG = "LONG"
@@ -105,7 +95,6 @@ class User(Base):
     
     # Trackers
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    status = Column(Enum(UserStatus), default=UserStatus.ACTIVE)
     
     # Relationships
     allocations = relationship("UserStrategyAllocation", back_populates="user")
@@ -118,7 +107,6 @@ class Strategy(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, unique=True, index=True)
-    strategy_type = Column(Enum(StrategyType), default=StrategyType.INTRADAY)
     risk_profile = Column(Enum(RiskCategory), default=RiskCategory.LOW)
     active = Column(Boolean, default=True)
 
@@ -199,12 +187,6 @@ class Order(Base):
     exit_reason = Column(String, nullable=True) # e.g. "SL", "TARGET", "EOD"
     close_requested_at = Column(DateTime(timezone=True), nullable=True)
     
-    # Latency Telemetry (Phase 3)
-    signal_creation_time = Column(DateTime(timezone=True), nullable=True)
-    order_submission_time = Column(DateTime(timezone=True), nullable=True)
-    broker_ack_time = Column(DateTime(timezone=True), nullable=True)
-    final_fill_time = Column(DateTime(timezone=True), nullable=True)
-    
     # Relationships
     user = relationship("User", back_populates="orders")
     signal = relationship("Signal", back_populates="orders")
@@ -238,21 +220,12 @@ class PortfolioMetrics(Base):
 
     user_id = Column(Integer, ForeignKey("users.id"), primary_key=True)
     
-    realized_pnl = Column(Numeric(15, 4), default=0.0)
-    unrealized_pnl = Column(Numeric(15, 4), default=0.0)
-    current_drawdown = Column(Numeric(15, 4), default=0.0)
+    realized_pnl = Column(Numeric(15, 4), default=0.0)   # today's; reset by RiskGate.check_intraday_reset
     peak_equity = Column(Numeric(15, 4), default=50000.0)
-    
-    # Margin Cache Guardrail
-    available_margin = Column(Numeric(15, 4), default=0.0)
-    last_margin_sync = Column(DateTime(timezone=True), nullable=True)
-    
+
     # Anomaly Clustering (Phase 3.995)
     consecutive_loss_days = Column(Integer, default=0)
     consecutive_dd_hits = Column(Integer, default=0)
-    
-    win_rate = Column(Numeric(15, 4), default=0.0)
-    sharpe_estimate = Column(Numeric(15, 4), default=0.0)
 
     user = relationship("User", back_populates="portfolio_metrics")
 

@@ -130,8 +130,6 @@ class SupertrendStrategy(BaseStrategy):
                 if basic_lb > self._final_lowerband or (history and history[-1]["close"] < self._final_lowerband):
                     self._final_lowerband = basic_lb
                     
-            prev_trend_dir = self._trend_dir
-            
             if self._trend_dir == 1 and close_price < self._final_lowerband:
                 self._trend_dir = -1
                 trend_flip = True

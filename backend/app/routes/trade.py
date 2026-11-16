@@ -22,36 +22,17 @@ from sqlalchemy.orm import Session, joinedload
 from .. import crud, models
 from ..auth import get_current_user
 from ..config import config
-from ..db import SessionLocal
-from ..core.tick_store import MAX_TICK_AGE_S, get_cached_ltp, get_live_ltp, get_tick
+from ..db import get_db
+from ..core.tick_store import MAX_TICK_AGE_S, get_live_ltp, latest_ltp
 from ..engines.paper_strategy_runner import EOD_CUTOFF
-from ..engines.risk_engine import RiskGate
+from ..engines.risk_engine import PENDING_STATUSES, RiskGate, buying_power_left
+from research.utils.market_calendar import is_trading_day
 
 router = APIRouter(prefix="/api/trade", tags=["manual-trade"])
 
 MANUAL_STRATEGY_NAME = "manual"
 _IST = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN = dt_time(9, 15)
-
-# Orders accepted but not yet filled
-PENDING_STATUSES = [
-    models.OrderStatus.NEW,
-    models.OrderStatus.ENQUEUED,
-    models.OrderStatus.SENDING,
-    models.OrderStatus.SUBMITTED,
-    models.OrderStatus.BROKER_ACK,
-    models.OrderStatus.CONFIRMED,
-    models.OrderStatus.PARTIALLY_FILLED,
-    models.OrderStatus.FAILED_RETRYABLE,
-]
-
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 
 class ManualOrderIn(BaseModel):
@@ -78,18 +59,6 @@ def _bare_symbol(symbol: str) -> str:
     return s
 
 
-def _ltp(symbol: str) -> Optional[float]:
-    try:
-        tick = get_tick(symbol)
-    except Exception:
-        tick = None
-    if not tick or not tick.get("ltp"):
-        tick = get_cached_ltp(symbol)
-    if tick and tick.get("ltp"):
-        return float(tick["ltp"])
-    return None
-
-
 def _live_ltp_or_409(symbol: str) -> float:
     """Fresh price for placing / closing at market. A stale tick (feed down,
     symbol not trading, yesterday's close) would create a fake fill."""
@@ -105,22 +74,19 @@ def _live_ltp_or_409(symbol: str) -> float:
 
 def _require_market_open():
     """Manual orders only while an intraday entry can actually live: 09:15 to
-    the 15:20 EOD square-off, Monday-Friday (IST)."""
+    the 15:20 EOD square-off, on an NSE trading day (IST)."""
     now = datetime.now(_IST)
-    if now.weekday() >= 5 or not (MARKET_OPEN <= now.time() < EOD_CUTOFF):
+    if not is_trading_day(now.date()) or not (MARKET_OPEN <= now.time() < EOD_CUTOFF):
         raise HTTPException(
             409,
             f"Market is closed. Manual orders are accepted 09:15–"
-            f"{EOD_CUTOFF.strftime('%H:%M')} IST, Monday to Friday.",
+            f"{EOD_CUTOFF.strftime('%H:%M')} IST on trading days.",
         )
 
 
 def _require_paper_mode():
-    if config.EXECUTION_MODE.lower() != "paper":
-        raise HTTPException(
-            status_code=409,
-            detail="Manual trading is only available in paper mode.",
-        )
+    if config.EXECUTION_MODE != "paper":
+        raise HTTPException(409, "Manual trading is only available in paper mode.")
 
 
 def _get_user(db: Session, username: str) -> models.User:
@@ -128,6 +94,20 @@ def _get_user(db: Session, username: str) -> models.User:
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
+
+
+def _open_position(db: Session, user: models.User, order_id: int) -> models.Order:
+    order = (
+        db.query(models.Order)
+        .options(joinedload(models.Order.signal))
+        .filter(models.Order.id == order_id, models.Order.user_id == user.id)
+        .first()
+    )
+    if not order:
+        raise HTTPException(404, "Position not found")
+    if order.status != models.OrderStatus.FILLED:
+        raise HTTPException(409, f"Position is {order.status.value}, not open.")
+    return order
 
 
 def _validate_bracket(is_long: bool, ref_price: float, stop_loss: Optional[float], target: Optional[float]):
@@ -164,7 +144,7 @@ def _order_dict(o: models.Order) -> dict:
         "created_at": o.created_at.isoformat() if o.created_at else None,
     }
     if o.status == models.OrderStatus.FILLED:
-        ltp = _ltp(o.symbol)
+        ltp = latest_ltp(o.symbol)
         d["ltp"] = ltp
         base = avg if avg is not None else entry
         if ltp is not None and base is not None:
@@ -200,21 +180,14 @@ def place_manual_order(
     is_long = body.side == "BUY"
     _validate_bracket(is_long, ltp, body.stop_loss, body.target)
 
-    # Capital check: this order plus everything already open or in flight
-    open_orders = db.query(models.Order).filter(
-        models.Order.user_id == user.id,
-        models.Order.status.in_(PENDING_STATUSES + [models.OrderStatus.FILLED]),
-    ).all()
-    committed = sum(
-        float(o.average_price or o.entry_price or 0) * (o.quantity or 0) for o in open_orders
-    )
+    # Capital check: same rule as automated orders (intraday leverage on capital)
     notional = ltp * body.qty
-    capital = float(user.capital_current or 0)
-    if committed + notional > capital:
+    left = float(buying_power_left(db, user))
+    if notional > left:
         raise HTTPException(
             422,
-            f"Insufficient capital: order needs ₹{notional:,.2f}, "
-            f"available ₹{max(capital - committed, 0):,.2f}.",
+            f"Insufficient buying power: order needs ₹{notional:,.2f}, "
+            f"available ₹{max(left, 0):,.2f}.",
         )
 
     now = datetime.now(timezone.utc)
@@ -285,7 +258,7 @@ def list_positions(db: Session = Depends(get_db), username: str = Depends(get_cu
     )
     settings = db.query(models.SystemSettings).first()
     return {
-        "execution_mode": config.EXECUTION_MODE.lower(),
+        "execution_mode": config.EXECUTION_MODE,
         "emergency_stop": bool(settings and settings.emergency_stop),
         "positions": [_order_dict(o) for o in orders if o.status == models.OrderStatus.FILLED],
         "pending": [_order_dict(o) for o in orders if o.status != models.OrderStatus.FILLED],
@@ -302,19 +275,8 @@ def update_bracket(
     """Change the stop-loss / target of an open position. The exit monitor
     picks the new levels up on its next DB resync (within ~5 s)."""
     _require_paper_mode()
-    user = _get_user(db, username)
-    order = (
-        db.query(models.Order)
-        .options(joinedload(models.Order.signal))
-        .filter(models.Order.id == order_id, models.Order.user_id == user.id)
-        .first()
-    )
-    if not order:
-        raise HTTPException(404, "Position not found")
-    if order.status != models.OrderStatus.FILLED:
-        raise HTTPException(409, f"Position is {order.status.value}, not open.")
-
-    ref = _ltp(order.symbol) or float(order.average_price or order.entry_price)
+    order = _open_position(db, _get_user(db, username), order_id)
+    ref = latest_ltp(order.symbol) or float(order.average_price or order.entry_price)
     _validate_bracket(order.direction == models.Direction.LONG, ref, body.stop_loss, body.target)
 
     signal = order.signal
@@ -346,15 +308,7 @@ def close_position(
 ):
     """Square off an open position (manual or automated) at the current price."""
     _require_paper_mode()
-    user = _get_user(db, username)
-    order = db.query(models.Order).filter(
-        models.Order.id == order_id, models.Order.user_id == user.id
-    ).first()
-    if not order:
-        raise HTTPException(404, "Position not found")
-    if order.status != models.OrderStatus.FILLED:
-        raise HTTPException(409, f"Position is {order.status.value}, not open.")
-
+    order = _open_position(db, _get_user(db, username), order_id)
     # No stale-price close: if the feed is down the exit monitor still squares
     # the position off at EOD.
     ltp = _live_ltp_or_409(order.symbol)

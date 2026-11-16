@@ -96,7 +96,6 @@ class NiftyBreakoutStrategy(BaseStrategy):
         self._retest_bars_waited:  int  = 0       # bars since breakout
         self._retest_triggered:    bool = False   # price pulled back to OR level
         self._breakout_volume_ok:  bool = False   # volume was ok on breakout bar
-        self._breakout_bar:        Optional[dict] = None  # the original breakout bar
 
         # VWAP accumulators
         self._vwap_cum_tp_vol: float = 0.0
@@ -118,7 +117,6 @@ class NiftyBreakoutStrategy(BaseStrategy):
         self._breakout_seen = self._retest_triggered = False
         self._retest_bars_waited = 0
         self._breakout_volume_ok = False
-        self._breakout_bar = None
         self._vwap_cum_tp_vol = self._vwap_cum_vol = 0.0
 
     def on_bar(
@@ -208,7 +206,6 @@ class NiftyBreakoutStrategy(BaseStrategy):
                 self._breakout_seen      = True
                 self._retest_bars_waited = 0
                 self._breakout_volume_ok = vol_ok
-                self._breakout_bar       = bar
                 logger.debug(
                     f"Breakout detected: close={bar['close']:.2f} > level={breakout_level:.2f} "
                     f"| vol_ok={vol_ok}"
@@ -258,8 +255,6 @@ class NiftyBreakoutStrategy(BaseStrategy):
             return None
         self._trade_done = True
         current_vwap = self._get_vwap()
-        lookback = self.config.volume_lookback
-        recent_vols = []  # meta only
         return Signal(
             direction    = "LONG",
             entry_price  = entry_price,

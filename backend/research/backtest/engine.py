@@ -11,10 +11,9 @@ Config is stored as a JSON snapshot in BacktestRun for full reproducibility.
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 import zoneinfo
@@ -26,7 +25,7 @@ from research.data.models import BacktestRun, BacktestTrade
 from research.strategies.base import BaseStrategy, Signal
 from research.backtest.metrics import compute_metrics
 from research.utils.fee_calculator import FeeConfig, SlippageConfig, calculate_charges, calculate_slippage
-from research.utils.market_calendar import is_trading_day, is_past_squareoff
+from research.utils.market_calendar import is_past_squareoff
 
 logger = logging.getLogger("BacktestEngine")
 
@@ -49,26 +48,6 @@ class BacktestResult:
         self.metrics = metrics
         self.run_id  = run_id
 
-    def summary(self) -> str:
-        m = self.metrics
-        lines = [
-            f"\n{'='*55}",
-            f"  BACKTEST RESULT",
-            f"{'='*55}",
-            f"  Total Trades    : {m['total_trades']}",
-            f"  Win Rate        : {m['win_rate']*100:.1f}%  ({m['winning_trades']}W / {m['losing_trades']}L)",
-            f"  Net P&L         : Rs.{m['net_pnl']:,.2f}",
-            f"  Return          : {m['net_return_pct']:.2f}%",
-            f"  Total Charges   : Rs.{m['total_charges']:,.2f}",
-            f"  Profit Factor   : {m['profit_factor'] or 'N/A'}",
-            f"  Max Drawdown    : {m['max_drawdown']:.2f}% (Rs.{m['max_drawdown_abs']:,.2f})",
-            f"  Expectancy      : Rs.{m['expectancy']:,.2f} per trade",
-            f"  Max Consec Loss : {m['max_consecutive_losses']}",
-            f"  Sharpe          : {m['sharpe'] or 'N/A'}",
-            f"{'='*55}",
-        ]
-        return "\n".join(lines)
-
 
 class BacktestEngine:
     """
@@ -86,7 +65,6 @@ class BacktestEngine:
           risk_config=RiskConfig(capital=100_000, risk_pct=1.0, max_positions=3),
       )
       result = engine.run()
-      print(result.summary())
     """
 
     def __init__(

@@ -14,7 +14,7 @@ All queries use security_id as the canonical key. symbol is display-only.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Optional
 
 import pandas as pd

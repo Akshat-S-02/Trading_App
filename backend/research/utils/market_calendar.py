@@ -85,18 +85,6 @@ def is_trading_day(d: date) -> bool:
     return True
 
 
-def trading_days_between(from_date: date, to_date: date) -> list[date]:
-    """Return list of NSE trading days in [from_date, to_date] inclusive."""
-    from datetime import timedelta
-    days = []
-    current = from_date
-    while current <= to_date:
-        if is_trading_day(current):
-            days.append(current)
-        current += timedelta(days=1)
-    return days
-
-
 def is_in_session(dt: datetime) -> bool:
     """
     Return True if dt (timezone-aware UTC or IST) falls within NSE equity session
@@ -112,8 +100,3 @@ def is_past_squareoff(dt: datetime) -> bool:
     dt_ist = dt.astimezone(_IST)
     t = dt_ist.time()
     return t >= SQUAREOFF_TIME
-
-
-def to_ist(dt_utc: datetime) -> datetime:
-    """Convert a UTC-aware datetime to IST."""
-    return dt_utc.astimezone(_IST)

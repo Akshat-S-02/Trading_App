@@ -47,53 +47,30 @@ up to 3 times before marking `FAILED_FATAL`.
 
 These are not required for normal operation.
 
-### Reconciliation (on demand, at startup after a crash)
+### Tests
 
 ```bash
 cd backend
-python test_cold_boot.py
+.venv/bin/python -m pytest -q
 ```
 
-Runs once. Syncs DB positions against live broker positions. Use after any unclean shutdown.
+In-memory SQLite, Dhan mocked; needs neither Postgres nor Redis.
 
-### Outbox resilience tests
+### Manual token renewal
 
 ```bash
 cd backend
-python test_outbox_resilience.py
+python force_renew.py
 ```
 
-Verifies worker crash-recovery and retry mechanics. Requires PostgreSQL and Redis.
-
-### Research / Backtesting
-
-```bash
-cd backend
-python run_mae_mfe_universe.py
-```
-
-Standalone — does not require the API or the outbox worker.
+There is no broker reconciliation yet: after an unclean shutdown in live mode,
+compare open orders in the Dhan app with the DB by hand. (The outbox worker
+requeues or closes interrupted sends on its own at startup.)
 
 ---
 
-## WebSocket Routes
+## WebSocket Route
 
-| Route | Source | Consumer |
-|---|---|---|
-| `ws://host/ws/market` | Dhan live feed → in-process dict | Flutter app (primary) |
-| `ws://host/ws/ltp?symbol=X` | Dhan live feed → Redis (`tick:X`) | Single-symbol polling clients |
-
-Both routes now read from the same underlying tick data.
-`/ws/market` is the primary Flutter route.
-`/ws/ltp` is a secondary single-symbol endpoint.
-
-> **Note:** `/ws/ltp` is defined only in `app/websocket/market_ws.py`. The old
-> duplicates in `app/routes/ws.py` and `app/routes/ws_routes.py` have been removed.
-
----
-
-## Known Limits (to fix in Bucket B)
-
-- `PortfolioMetrics.last_margin_sync` is never written → stale-margin guard is always skipped (silent)
-- Manual trade route (`POST /api/trade/place`) bypasses `ExecutionEngine` — sandbox only
-- Duplicate `GET /api/portfolio` and `GET /api/trades` endpoints exist in both `trade.py` and `admin.py`
+`ws://host/ws/market?token=<JWT>` streams every cached tick (symbol + LTP) every
+500 ms. The app is its only client. Ticks also go to Redis (`tick:<SYMBOL>`),
+which the worker and paper broker read.

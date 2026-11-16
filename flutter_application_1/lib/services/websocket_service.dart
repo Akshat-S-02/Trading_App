@@ -18,7 +18,8 @@ class WebSocketService {
   });
 
   void connect() {
-    debugPrint("🌐 WS connecting → $url");
+    // Path only: the query string carries the login token.
+    debugPrint("🌐 WS connecting → ${url.split('?').first}");
 
     try {
       _channel = WebSocketChannel.connect(Uri.parse(url));

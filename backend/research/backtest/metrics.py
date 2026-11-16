@@ -7,7 +7,6 @@ All inputs are plain dicts for easy serialization to BacktestRun columns.
 
 from __future__ import annotations
 
-import math
 import statistics
 from typing import Optional
 
@@ -34,7 +33,6 @@ def compute_metrics(
         return _empty_metrics()
 
     net_pnls   = [t["net_pnl"]   for t in trades]
-    gross_pnls = [t["gross_pnl"] for t in trades]
     charges    = [t["charges"]   for t in trades]
 
     winners = [p for p in net_pnls if p > 0]

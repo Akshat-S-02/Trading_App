@@ -30,6 +30,18 @@ def get_cached_ltp(symbol: str):
     return None
 
 
+def latest_ltp(symbol: str):
+    """Latest price of any age: Redis (shared by all processes) first, then this
+    process's in-memory cache. None if neither has one."""
+    try:
+        tick = get_tick(symbol)
+    except Exception:
+        tick = None
+    if not tick or not tick.get("ltp"):
+        tick = get_cached_ltp(symbol)
+    return float(tick["ltp"]) if tick and tick.get("ltp") else None
+
+
 def save_tick(symbol: str, ltp: float):
     try:
         redis.set(f"{REDIS_KEY_PREFIX}{symbol.upper()}", json.dumps({

@@ -3,7 +3,6 @@ import 'package:flutter/services.dart';
 import 'package:intl/intl.dart' show NumberFormat;
 import 'package:provider/provider.dart';
 import '../providers/trading_provider.dart';
-import '../utils/format.dart';
 import 'settings_dialog.dart';
 import '../ui/components.dart';
 import '../ui/theme.dart';
@@ -220,7 +219,8 @@ class ControlWidget extends StatelessWidget {
     final status = trading.paperStatus;
     final running = trading.autoRunning;
     final known = status.isNotEmpty;
-    final accent = running ? AppColors.green : AppColors.orange;
+    final halted = known && trading.autoHalted;
+    final accent = halted ? AppColors.red : (running ? AppColors.green : AppColors.orange);
 
     return Surface(
       padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
@@ -242,18 +242,35 @@ class ControlWidget extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(!known ? 'Paper strategies' : (running ? 'Running' : 'Paused'), style: AppText.headline),
+                    Text(!known ? 'Paper strategies' : (halted ? 'Halted' : running ? 'Running' : 'Paused'),
+                        style: AppText.headline),
                     Text(
                       !known
                           ? 'Connecting…'
-                          : running
-                              ? 'Strategies can open new paper trades.'
-                              : 'No new entries. Open positions still exit on SL, target or end of day.',
+                          : halted
+                              ? 'A risk guard stopped auto-trading (loss limit or losing streak). '
+                                  'Open positions still exit on SL, target or end of day.'
+                              : running
+                                  ? 'Strategies can open new paper trades.'
+                                  : 'No new entries. Open positions still exit on SL, target or end of day.',
                       style: AppText.footnote,
                     ),
                   ],
                 ),
               ),
+              if (halted)
+                TextButton(
+                  onPressed: trading.emergencyStop
+                      ? null
+                      : () async {
+                          HapticFeedback.selectionClick();
+                          final messenger = ScaffoldMessenger.of(context);
+                          final res = await trading.resumeAutomation();
+                          notify(messenger, res.message, ok: res.ok);
+                        },
+                  child: const Text('Resume'),
+                )
+              else
               Switch(
                 value: running,
                 onChanged: !known || trading.emergencyStop
@@ -392,6 +409,8 @@ class ControlWidget extends StatelessWidget {
     );
   }
 
+  static String _pct(double v) => '${v.toStringAsFixed(v == v.truncateToDouble() ? 0 : 1)}%';
+
   Widget _buildProgressBar(BuildContext context, String label, double spent, double limit) {
     final progress = limit > 0 ? (spent / limit).clamp(0.0, 1.0) : 0.0;
     // Colour says how close to the limit you are, not which limit it is.
@@ -404,8 +423,8 @@ class ControlWidget extends StatelessWidget {
             Expanded(child: Text(label, style: AppText.callout)),
             Text.rich(
               TextSpan(children: [
-                TextSpan(text: inrWhole(spent), style: AppText.subhead),
-                TextSpan(text: ' of ${inrWhole(limit)}', style: AppText.footnote),
+                TextSpan(text: '${_pct(spent)} lost', style: AppText.subhead),
+                TextSpan(text: ' of ${_pct(limit)}', style: AppText.footnote),
               ]),
               style: const TextStyle(fontFeatures: AppText.tabular),
             ),

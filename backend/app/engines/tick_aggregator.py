@@ -15,7 +15,7 @@ Rules (matching backtest behaviour):
 from __future__ import annotations
 
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time, timezone
 from typing import Callable, Dict, Optional
 import zoneinfo
 
@@ -31,7 +31,7 @@ BUCKET_MINUTES = 5
 class _CandleBuilder:
     """Accumulates ticks into a single 5-min OHLCV bar."""
 
-    __slots__ = ("open", "high", "low", "close", "volume", "tick_count")
+    __slots__ = ("open", "high", "low", "close", "volume")
 
     def __init__(self, price: float, volume: int = 0):
         self.open  = price
@@ -39,14 +39,12 @@ class _CandleBuilder:
         self.low   = price
         self.close = price
         self.volume = volume
-        self.tick_count = 1
 
     def update(self, price: float, volume: int = 0) -> None:
         self.high  = max(self.high, price)
         self.low   = min(self.low, price)
         self.close = price
         self.volume += volume
-        self.tick_count += 1
 
 
 class TickAggregator:
@@ -156,10 +154,6 @@ class TickAggregator:
     @property
     def last_bucket(self) -> Optional[datetime]:
         return self._current_bucket
-
-    @property
-    def tracked_symbols(self) -> list[str]:
-        return list(self._builders.keys())
 
     def get_history(self, symbol: str) -> list[dict]:
         return self._histories.get(symbol, [])

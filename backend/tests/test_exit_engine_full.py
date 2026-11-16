@@ -9,7 +9,6 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from app.db import require_test_db; require_test_db()  # this script deletes data
 
 from app.engines.paper_strategy_runner import get_runner
-from app.engines.execution_engine import ExecutionEngine
 from app.db import SessionLocal
 from app import models
 from app.core import tick_store

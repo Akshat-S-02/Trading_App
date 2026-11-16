@@ -9,7 +9,7 @@ send BSE security ids to NSE_EQ endpoints.
 
 import time
 
-import requests
+import httpx
 
 from app.config import config
 from app.core import instruments
@@ -50,12 +50,11 @@ def search_instruments(query: str, limit: int = 20) -> list[dict]:
     q = (query or "").strip().upper()
     if not q:
         return []
-    if instruments.df is None or instruments.df.empty:
+    if instruments.nse_eq_df is None:
         instruments.load_instruments()
-    df = instruments.df
-    if df is None or df.empty:
+    nse_eq = instruments.nse_eq_df  # filtered once at load, not per keystroke
+    if nse_eq is None or nse_eq.empty:
         return []
-    nse_eq = df[(df["sem_exm_exch_id"] == "NSE") & (df["sem_series"] == "EQ")]
     # regex=False: user text like "M&M" or "(" is literal, not a pattern
     mask = (nse_eq["sem_trading_symbol"].str.contains(q, regex=False, na=False)
             | nse_eq["sm_symbol_name"].str.contains(q, regex=False, na=False))
@@ -64,27 +63,13 @@ def search_instruments(query: str, limit: int = 20) -> list[dict]:
             "symbol": row["sem_trading_symbol"],
             "name": row["sm_symbol_name"],
             "exchange": row["sem_exm_exch_id"],
-            "security_id": row["sem_smst_security_id"],
+            "security_id": int(row["sem_smst_security_id"]),
         }
         for _, row in nse_eq[mask].head(limit).iterrows()
     ]
 
 
 # ── LTP snapshots (REST) ──────────────────────────────────────────────────────
-
-_last_rest_call: dict[str, float] = {}
-REST_COOLDOWN_S = 10.0
-
-
-def get_ltp(symbol: str) -> float:
-    """Single-symbol REST LTP with a 10 s per-symbol cooldown. 0.0 when unknown,
-    in cooldown, rate-limited, or the market is closed."""
-    now = time.time()
-    if now - _last_rest_call.get(symbol, 0) < REST_COOLDOWN_S:
-        return 0.0
-    _last_rest_call[symbol] = now
-    return get_ltp_batch([symbol]).get(symbol.upper(), 0.0)
-
 
 def get_ltp_batch(symbols: list[str]) -> dict[str, float]:
     """LTP for many symbols in one Dhan call. Unknown / missing symbols get 0.0."""
@@ -98,7 +83,7 @@ def get_ltp_batch(symbols: list[str]) -> dict[str, float]:
         return result
 
     try:
-        resp = requests.post(f"{_base()}/v2/marketfeed/ltp", json={"NSE_EQ": list(sid_to_sym)},
+        resp = httpx.post(f"{_base()}/v2/marketfeed/ltp", json={"NSE_EQ": list(sid_to_sym)},
                              headers=_headers(), timeout=15)
         if resp.status_code == 401:
             _on_401()
@@ -150,8 +135,8 @@ def place_order(symbol: str, qty: int, direction: str, price: float = 0.0,
     }
 
     try:
-        resp = requests.post(f"{_base()}/v2/orders", json=payload, headers=_headers(), timeout=10)
-    except (requests.Timeout, requests.ConnectionError) as e:
+        resp = httpx.post(f"{_base()}/v2/orders", json=payload, headers=_headers(), timeout=10)
+    except httpx.TransportError as e:  # timeout / network: the order may have gone out
         return {"status": "unknown", "error": f"No response from Dhan: {e}"}
 
     if resp.status_code == 401:
@@ -172,7 +157,7 @@ def find_order_by_correlation(correlation_id: str) -> dict | None:
     order with that tag, None if Dhan has none. Raises on network / HTTP
     failure so the caller never mistakes "couldn't ask" for "not placed".
     """
-    resp = requests.get(f"{_base()}/v2/orders/external/{correlation_id}", headers=_headers(), timeout=10)
+    resp = httpx.get(f"{_base()}/v2/orders/external/{correlation_id}", headers=_headers(), timeout=10)
     if resp.status_code == 404:
         return None
     if resp.status_code == 401:

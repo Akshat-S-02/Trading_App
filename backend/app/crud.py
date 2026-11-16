@@ -50,20 +50,5 @@ def seed_trading_defaults(db: Session, user: models.User):
 
     metrics = db.query(models.PortfolioMetrics).filter(models.PortfolioMetrics.user_id == user.id).first()
     if not metrics:
-        # available_margin starts at capital: nothing syncs margin in paper mode,
-        # and the local margin guard rejects every order when it is 0.
-        db.add(models.PortfolioMetrics(
-            user_id=user.id,
-            peak_equity=user.capital_initial,
-            available_margin=user.capital_current,
-        ))
+        db.add(models.PortfolioMetrics(user_id=user.id, peak_equity=user.capital_initial))
         db.commit()
-
-def add_tokens(db: Session, username: str, amount: float):
-    user = get_user(db, username)
-    if user:
-        user.capital_current += amount
-        db.add(user); db.commit(); db.refresh(user)
-    return user
-
-# holdings, trades helpers omitted for brevity; add as needed

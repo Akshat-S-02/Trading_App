@@ -77,12 +77,6 @@ class ResearchStrategyAdapter:
             return None
         return self._translate(symbol, research_signal, timestamp)
 
-    def reset(self) -> None:
-        self._strategies.clear()
-        self._histories.clear()
-        self._last_dates.clear()
-        self._last_candle_times.clear()
-
     def _get_or_create(self, symbol: str):
         if symbol not in self._strategies:
             self._strategies[symbol] = self.strategy_cls(self.config)

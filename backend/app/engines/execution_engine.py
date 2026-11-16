@@ -1,13 +1,20 @@
 import logging
-from sqlalchemy.orm import Session
-from .. import models
-from .strategy_engine import Signal
-from .risk_engine import RiskGate
-from decimal import Decimal
+import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
+from decimal import Decimal
+
 import sqlalchemy
-from sqlalchemy import func
+from sqlalchemy import case, func
+from sqlalchemy.orm import Session
+
+from app.config import config
 from app.core.alerts import sync_dispatch_alert
+from app.core.tick_store import get_tick
+
+from .. import models
+from .risk_engine import RiskGate, buying_power_left
+from .strategy_engine import Signal
 
 logger = logging.getLogger("ExecutionEngine")
 
@@ -16,9 +23,8 @@ class ExecutionEngine:
         self.db = db
 
     def _build_portfolio_snapshot(self, user_id: int) -> dict:
-        from app.core.tick_store import get_tick
-        
-        # Fetch today's executed orders to build deterministic intraday exposure
+        """Unrealized P&L of today's open fills at the latest price; missing_cmp
+        if an open symbol has no price (RiskGate then blocks new entries)."""
         today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         orders = self.db.query(models.Order).filter(
             models.Order.user_id == user_id,
@@ -26,49 +32,30 @@ class ExecutionEngine:
             models.Order.filled_quantity > 0,
             models.Order.created_at >= today
         ).all()
-        
-        positions = {}
+
+        # symbol -> {LONG: [qty, value], SHORT: [qty, value]}
+        positions = defaultdict(lambda: {models.Direction.LONG: [Decimal(0), Decimal(0)],
+                                         models.Direction.SHORT: [Decimal(0), Decimal(0)]})
         for o in orders:
-            sym = o.symbol
-            if sym not in positions:
-                positions[sym] = {
-                    'long_qty': Decimal('0.0'), 'long_val': Decimal('0.0'),
-                    'short_qty': Decimal('0.0'), 'short_val': Decimal('0.0')
-                }
             qty = Decimal(str(o.filled_quantity))
-            price = Decimal(str(o.average_price or o.entry_price))
-            val = qty * price
-            
-            if o.direction == models.Direction.LONG:
-                positions[sym]['long_qty'] += qty
-                positions[sym]['long_val'] += val
-            else:
-                positions[sym]['short_qty'] += qty
-                positions[sym]['short_val'] += val
-                
-        unrealized_pnl = Decimal('0.0')
-        missing_cmp = False
-        
-        for sym, data in positions.items():
-            net_qty = data['long_qty'] - data['short_qty']
-            if net_qty != 0:
-                tick = get_tick(sym)
-                if not tick or tick.get("ltp") is None:
-                    missing_cmp = True
-                    continue
-                    
-                cmp = Decimal(str(tick["ltp"]))
-                if net_qty > 0:
-                    avg_entry = data['long_val'] / data['long_qty'] if data['long_qty'] > 0 else Decimal('0.0')
-                    unrealized_pnl += net_qty * (cmp - avg_entry)
-                else:
-                    avg_entry = data['short_val'] / data['short_qty'] if data['short_qty'] > 0 else Decimal('0.0')
-                    unrealized_pnl += abs(net_qty) * (avg_entry - cmp)
-                    
-        return {
-            "unrealized_pnl": unrealized_pnl,
-            "missing_cmp": missing_cmp
-        }
+            side = positions[o.symbol][o.direction]
+            side[0] += qty
+            side[1] += qty * Decimal(str(o.average_price or o.entry_price))
+
+        unrealized_pnl, missing_cmp = Decimal(0), False
+        for sym, sides in positions.items():
+            (lq, lv), (sq, sv) = sides[models.Direction.LONG], sides[models.Direction.SHORT]
+            net_qty = lq - sq
+            if net_qty == 0:
+                continue
+            tick = get_tick(sym)
+            if not tick or tick.get("ltp") is None:
+                missing_cmp = True
+                continue
+            cmp = Decimal(str(tick["ltp"]))
+            # net long: priced against the average long entry; net short: the average short entry
+            unrealized_pnl += net_qty * (cmp - lv / lq) if net_qty > 0 else -net_qty * (sv / sq - cmp)
+        return {"unrealized_pnl": unrealized_pnl, "missing_cmp": missing_cmp}
 
     def _persist_signal(self, signal: Signal) -> int | None:
         """
@@ -140,14 +127,11 @@ class ExecutionEngine:
                 continue
 
             try:
-                # 0.2 PRE-FLIGHT BROKER HEALTH GUARD
-                from app.config import config
+                # Live with a dead token: stop routing until token_renewal fixes it
                 from app.services.token_renewal import is_token_valid
-                
-                if config.EXECUTION_MODE == "live":
-                    if not config.ACCESS_TOKEN or not is_token_valid():
-                        logger.error(f"Broker Health Guard Failed for {user_id}: DHAN_ACCESS_TOKEN is missing or unauthorized (401 flagged). Halting order flow.")
-                        break # Break entirely, token is dead. Need to wait for token_renewal daemon.
+                if config.EXECUTION_MODE == "live" and (not config.ACCESS_TOKEN or not is_token_valid()):
+                    logger.error("Broker Health Guard: Dhan token missing or rejected (401). Halting order flow.")
+                    break
 
                 # 2. CONCURRENCY SHIELD: Lock the user row for this transaction
                 user = self.db.query(models.User).filter(models.User.id == user_id).with_for_update().first()
@@ -172,39 +156,22 @@ class ExecutionEngine:
                 ).first()
                 
                 if transit_order:
-                    # Just print generic warning so Windows cp1252 doesn't explode
                     logger.warning(f"User {user.username} blocked: Transit order exists for {signal.symbol}.")
                     continue
-                    
-                longs = self.db.query(func.sum(models.Order.filled_quantity)).filter(
+
+                # Any open position on the symbol blocks entry: same direction would
+                # pyramid, opposite direction would hold LONG and SHORT at once.
+                current_position = self.db.query(func.sum(case(
+                    (models.Order.direction == models.Direction.LONG, models.Order.filled_quantity),
+                    else_=-models.Order.filled_quantity))).filter(
                     models.Order.user_id == user.id,
                     models.Order.symbol == signal.symbol,
-                    models.Order.direction == models.Direction.LONG,
                     models.Order.status.in_([models.OrderStatus.FILLED, models.OrderStatus.PARTIALLY_FILLED])
                 ).scalar() or 0
-                
-                shorts = self.db.query(func.sum(models.Order.filled_quantity)).filter(
-                    models.Order.user_id == user.id,
-                    models.Order.symbol == signal.symbol,
-                    models.Order.direction == models.Direction.SHORT,
-                    models.Order.status.in_([models.OrderStatus.FILLED, models.OrderStatus.PARTIALLY_FILLED])
-                ).scalar() or 0
-                
-                current_position = int(longs) - int(shorts)
-                
-                # Prevent Pyramiding: Block entry if we already have a position in the same direction
                 if current_position != 0:
-                    # Block same-direction pyramiding
-                    if (current_position > 0 and signal.direction == 'LONG') or (current_position < 0 and signal.direction == 'SHORT'):
-                        logger.warning(f"User {user.username} blocked: pyramiding prevention — already {current_position} shares on {signal.symbol}.")
-                        continue
-                    # Block opposite-direction entry while a position is open on the same symbol
-                    # Reason: having simultaneous LONG and SHORT on the same symbol creates undefined P&L
-                    # and doubles margin usage. The existing position must close first.
-                    if (current_position > 0 and signal.direction == 'SHORT') or (current_position < 0 and signal.direction == 'LONG'):
-                        logger.warning(f"User {user.username} blocked: opposite-direction entry prevented — {signal.direction} signal on {signal.symbol} while {current_position} shares open. Wait for position to close first.")
-                        continue
-                
+                    logger.warning(f"User {user.username} blocked: {current_position} shares already open on {signal.symbol}.")
+                    continue
+
                 # 2.9 Prepare Portfolio Snapshot
                 snapshot = self._build_portfolio_snapshot(user.id)
                 
@@ -222,16 +189,8 @@ class ExecutionEngine:
                     logger.warning(f"User {user.username} blocked by RiskGate.")
                     continue
                     
-                # 4. Capital Fragmentation Calculation
-                allocation_pct = Decimal(str(alloc.allocation_percentage))
-                allocated_capital = Decimal(str(user.capital_current)) * (allocation_pct / Decimal('100.0'))
-                
                 # 5. Position Sizing
-                size = RiskGate.calculate_position_size(
-                    user=user,
-                    signal=signal,
-                    lot_size=1
-                )
+                size = RiskGate.calculate_position_size(user=user, signal=signal)
                 
                 if size <= 0:
                     logger.warning(
@@ -240,28 +199,13 @@ class ExecutionEngine:
                     )
                     continue
                     
-                # 5.5 Margin Cache Guardrail
-                # Assumes conservative 5x leverage for intraday NSE equity
-                estimated_margin_required = (signal.entry_price * Decimal(str(size))) / Decimal('5.0')
-                
-                # Check for stale margin cache
-                current_time = datetime.now(timezone.utc)
-                if user.portfolio_metrics:
-                    last_sync = user.portfolio_metrics.last_margin_sync
-                    if last_sync:
-                        if (current_time - last_sync).total_seconds() > 30:
-                            logger.warning(f"User {user.username} rejected via Stale Margin Guard: Cache is > 30s old.")
-                            sync_dispatch_alert("WARNING", "Stale Margin Cache", f"Blocked execution for {user.username}. Cache delta > 30s.")
-                            continue # Added missing continue
-                    else:
-                        # User-requested honest logging for sandbox bypass
-                        logger.info(f"stale-margin guard bypassed for {user.username}: no margin sync exists yet (sandbox mode assumption active)")
-                        
-                    if user.portfolio_metrics.available_margin < estimated_margin_required:
-                        # In a real scenario, this helps pre-empt a broker HTTP 400 rejection
-                        logger.warning(f"User {user.username} rejected via Local Margin Guard: Requires {estimated_margin_required:.2f}, Cache has {user.portfolio_metrics.available_margin:.2f}")
-                        continue
-                    
+                # 5.5 Capital: same rule as manual orders (risk_engine.buying_power_left)
+                notional = signal.entry_price * Decimal(str(size))
+                left = buying_power_left(self.db, user)
+                if notional > left:
+                    logger.warning(f"User {user.username} blocked: order needs {notional:.2f}, buying power left {left:.2f}")
+                    continue
+
                 # 6. Build and Store Order
                 side = models.Direction.LONG if signal.direction == "LONG" else models.Direction.SHORT
                 order = models.Order(
@@ -324,11 +268,6 @@ class ExecutionEngine:
             return
             
         logger.error(f"Broker Rejected Order {order_id} (User {order.user_id}): {reason}")
-        
-        # We NO LONGER clear `signal_hash` here to avoid infinite loops and maintain `UniqueConstraint` bounds
-        # order.signal_hash = None
-                
-        # 2. Revert order state
         order.status = models.OrderStatus.REJECTED
         order.rejection_count = (order.rejection_count or 0) + 1
         
@@ -382,22 +321,14 @@ class ExecutionEngine:
         )
         self.db.add(db_fill)
             
-        # 2. Recalculate Average Fill Price
-        old_filled = order.filled_quantity
-        old_avg = Decimal(str(order.average_price)) if order.average_price else Decimal('0.0')
-        
+        # 2. Weighted average fill price
+        old_filled = order.filled_quantity or 0
         new_total_filled = old_filled + filled_qty
-        
         if new_total_filled > 0:
-            # Weighted average using precision math
-            value1 = old_avg * Decimal(str(old_filled))
-            value2 = fill_price * Decimal(str(filled_qty))
-            total_value = value1 + value2
-            new_avg = total_value / Decimal(str(new_total_filled))
-            
-            order.average_price = new_avg
+            old_avg = Decimal(str(order.average_price or 0))
+            order.average_price = (old_avg * old_filled + fill_price * filled_qty) / new_total_filled
             order.filled_quantity = new_total_filled
-            
+
         # 3. Update status directionally
         if order.filled_quantity >= order.quantity:
             order.status = models.OrderStatus.FILLED
@@ -432,7 +363,6 @@ class ExecutionEngine:
             logger.warning(f"close_paper_position: Order {order_id} is in status {order.status}, not FILLED. Ignoring exit.")
             return
 
-        from app.config import config
         from app.broker.paper_broker import _apply_slippage
         from research.utils.fee_calculator import FeeConfig, calculate_charges
 
@@ -445,10 +375,7 @@ class ExecutionEngine:
         qty = Decimal(str(order.filled_quantity))
 
         # 1. Calculate Realized PnL, net of the same charges the backtest uses
-        if is_long:
-            gross_pnl = (exit_px - entry_px) * qty
-        else:
-            gross_pnl = (entry_px - exit_px) * qty
+        gross_pnl = (exit_px - entry_px) * qty if is_long else (entry_px - exit_px) * qty
 
         fee_config = FeeConfig()
         entry_charges = calculate_charges(fee_config, "buy" if is_long else "sell", int(qty), float(entry_px))
@@ -464,7 +391,6 @@ class ExecutionEngine:
         order.pnl = pnl
 
         # 3. Create Exit Fill Record
-        import uuid
         fill_id = f"exit_{uuid.uuid4().hex[:10]}"
         opened_at = order.created_at
         if opened_at and opened_at.tzinfo is None:
@@ -507,8 +433,5 @@ class ExecutionEngine:
             f"Gross {gross_pnl:.2f} - charges {charges:.2f} = net {pnl:.2f}. Capital now {user.capital_current:.2f}"
         )
         
-        sync_dispatch_alert(
-            "INFO", 
-            f"Paper Exit: {order.symbol}", 
-            f"Position closed via {reason} at {exit_px}. Realized PnL: {pnl:.2f}"
-        )
+        sync_dispatch_alert("INFO", f"Paper Exit: {order.symbol}",
+                            f"Position closed via {reason} at {exit_px}. Realized PnL: {pnl:.2f}")
